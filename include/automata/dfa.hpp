@@ -32,6 +32,11 @@ public:
     std::size_t start_state() const { return start_state_; }
     const std::vector<std::string>& alphabet() const { return alphabet_; }
     std::string to_definition() const;
+    // Generate a Chomsky Normal Form (CNF) grammar representation of this DFA.
+    // The output will be a CNF grammar (A -> BC or A -> a) with additional
+    // helper nonterminals T0..Tk mapping terminals to nonterminals (Tn -> a).
+    // If the start state is accepting, an S -> ε production may be included.
+    std::string to_chomsky() const;
 
 private:
     std::vector<State> states_;

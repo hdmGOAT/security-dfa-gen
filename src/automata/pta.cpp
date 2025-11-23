@@ -1,6 +1,6 @@
 #include "automata/pta.hpp"
-
 #include <stdexcept>
+#include <cassert>
 
 namespace automata_security {
 
@@ -31,13 +31,21 @@ void PTA::build(const std::vector<LabeledSequence>& samples) {
 
     for (const auto& sample : samples) {
         std::size_t current = start_state_;
+        // basic invariant: current must always be a valid node index
+        assert(current < nodes_.size());
         for (const auto& symbol : sample.symbols) {
+            // validate current before accessing
+            assert(current < nodes_.size());
             auto it = nodes_[current].transitions.find(symbol);
             if (it == nodes_[current].transitions.end()) {
                 std::size_t child_id = add_node();
+                // add_node() should append a node and return a valid id
+                assert(child_id < nodes_.size());
                 nodes_[current].transitions.emplace(symbol, child_id);
                 current = child_id;
             } else {
+                // ensure that transition target is within bounds
+                assert(it->second < nodes_.size());
                 current = it->second;
             }
         }

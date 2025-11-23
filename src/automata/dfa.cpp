@@ -7,6 +7,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <unordered_set>
+#include <cassert>
 
 namespace automata_security {
 
@@ -15,8 +16,12 @@ DFA::DFA() : start_state_(0), sink_state_(std::numeric_limits<std::size_t>::max(
 DFA DFA::from_pta(const PTA& pta) {
     DFA dfa;
     const auto& pta_nodes = pta.nodes();
+    // basic sanity: PTA must contain nodes
+    assert(!pta_nodes.empty());
     dfa.states_.resize(pta_nodes.size());
     dfa.start_state_ = pta.start_state();
+    // start state must be a valid index into states_
+    assert(dfa.start_state_ < dfa.states_.size());
 
     std::unordered_set<std::string> alphabet_set;
 
@@ -30,6 +35,10 @@ DFA DFA::from_pta(const PTA& pta) {
         state.accepting = state.positive_count > state.negative_count;
 
         for (const auto& [symbol, target] : node.transitions) {
+            // ensure transition targets are within PTA node bounds
+            if (target >= pta_nodes.size()) {
+                throw std::runtime_error("PTA transition target out of bounds while constructing DFA.");
+            }
             state.transitions[symbol] = target;
             alphabet_set.insert(symbol);
         }
@@ -355,6 +364,125 @@ std::string DFA::to_definition() const {
         for (const auto& [symbol, target] : transitions) {
             out << "  δ(s" << i << ", " << symbol << ") = s" << target << "\n";
         }
+    }
+
+    return out.str();
+}
+
+std::string DFA::to_chomsky() const {
+    std::ostringstream out;
+    out << "# Chomsky Normal Form (CNF) grammar generated from DFA\n";
+
+    // helper to quote terminals that contain spaces or special chars
+    auto quote = [](const std::string& s) -> std::string {
+        if (s.empty()) return "\"\"";
+        bool need = false;
+        for (char c : s) {
+            if (c == ' ' || c == '"' || c == '\\') { need = true; break; }
+        }
+        if (!need) return s;
+        std::string esc;
+        esc.reserve(s.size());
+        for (char c : s) {
+            if (c == '"' || c == '\\') esc.push_back('\\');
+            esc.push_back(c);
+        }
+        return std::string("\"") + esc + "\"";
+    };
+
+    // list terminals (quoted when needed)
+    out << "Terminals: {";
+    for (std::size_t i = 0; i < alphabet_.size(); ++i) {
+        if (i != 0) out << ", ";
+        out << quote(alphabet_[i]);
+    }
+    out << "}\n";
+
+    // nonterminals corresponding to DFA states; use 'S' as the start nonterminal
+    // and assign remaining nonterminals A0, A1, ... sequentially (no gaps)
+    std::vector<std::string> state_names(states_.size());
+    // place S for start
+    if (start_state_ < state_names.size()) {
+        state_names[start_state_] = "S";
+    }
+    // assign A0.. in order for other states
+    std::size_t a_idx = 0;
+    for (std::size_t i = 0; i < states_.size(); ++i) {
+        if (i == start_state_) continue;
+        state_names[i] = std::string("A") + std::to_string(a_idx++);
+    }
+
+    // print nonterminals with S first then the A# names in order
+    out << "Nonterminals: {";
+    out << "S";
+    for (std::size_t i = 0; i < states_.size(); ++i) {
+        if (i == start_state_) continue;
+        out << ", " << state_names[i];
+    }
+    out << "}\n";
+
+    out << "Start: S\n";
+
+    // We'll create helper nonterminals T0..Tk mapping to terminals
+    std::unordered_map<std::string, std::string> term_to_T;
+    term_to_T.reserve(alphabet_.size());
+    for (std::size_t i = 0; i < alphabet_.size(); ++i) {
+        term_to_T[alphabet_[i]] = "T" + std::to_string(i);
+    }
+
+    out << "Productions:\n";
+
+    // Emit terminal nonterminal mappings first: Tn -> terminal (quoted as needed)
+    for (std::size_t i = 0; i < alphabet_.size(); ++i) {
+        out << "  T" << i << " -> " << quote(alphabet_[i]) << "\n";
+    }
+
+    // For each DFA-state nonterminal A_i produce CNF productions
+    // A -> a  (if transition to accepting state)
+    // A -> T_a B  (for transitions on 'a' to state B)
+    auto name_for_state = [&](std::size_t idx) -> std::string {
+        if (idx < state_names.size()) return state_names[idx];
+        return std::string("A") + std::to_string(idx);
+    };
+
+    for (std::size_t i = 0; i < states_.size(); ++i) {
+        const auto& st = states_[i];
+        // collect unique CNF alternatives (to avoid duplicates)
+        std::set<std::string> opts;
+
+        for (const auto& [symbol, target] : st.transitions) {
+            auto it = term_to_T.find(symbol);
+            if (it == term_to_T.end()) continue; // shouldn't happen
+            const std::string& Tname = it->second;
+
+            // A_i -> T_symbol A_target  (two nonterminals)
+            std::ostringstream two;
+            two << Tname << " " << name_for_state(target);
+            opts.insert(two.str());
+
+            // If the target is accepting, keep A_i -> terminal as CNF terminal production
+            if (target < states_.size() && states_[target].accepting) {
+                std::ostringstream termprod;
+                termprod << quote(symbol);
+                opts.insert(termprod.str());
+            }
+        }
+
+        // If start state accepts empty string, include epsilon as special-case
+        if (start_state_ < states_.size() && states_[start_state_].accepting && i == start_state_) {
+            opts.insert(std::string("ε"));
+        }
+
+        if (opts.empty()) continue;
+
+        out << "  " << name_for_state(i) << " -> ";
+        bool first = true;
+        for (const auto& o : opts) {
+            if (!first) out << " | ";
+            out << o;
+            first = false;
+        }
+        out << "\n";
     }
 
     return out.str();

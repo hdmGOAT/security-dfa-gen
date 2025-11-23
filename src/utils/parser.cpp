@@ -8,6 +8,7 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <cassert>
 
 namespace automata_security {
 namespace {
@@ -98,12 +99,21 @@ std::vector<LabeledSequence> Parser::load_malware_csv(const std::string& path) {
 
     auto header = parse_delimited_line(line);
     auto index = header_index(header);
+
+        // sanity: header index entries should be within header size
+        for (const auto& p : index) {
+            assert(p.second < header.size());
+        }
     auto id_it = index.find("hash");
     auto label_it = index.find("malware");
 
     if (id_it == index.end() || label_it == index.end()) {
         throw std::runtime_error("Malware dataset missing required columns 'hash' or 'malware'.");
     }
+
+    // sanity checks
+    assert(id_it->second < header.size());
+    assert(label_it->second < header.size());
 
     std::vector<std::size_t> sequence_columns;
     for (const auto& [name, col_idx] : index) {
@@ -175,6 +185,8 @@ std::vector<LabeledSequence> Parser::load_iot_csv(const std::string& path) {
         throw std::runtime_error("IoT dataset missing required column 'label'.");
     }
 
+    assert(label_it->second < header.size());
+
     std::size_t detailed_label_col = index.count("detailed-label")
                                          ? index["detailed-label"]
                                          : header.size();
@@ -182,6 +194,10 @@ std::vector<LabeledSequence> Parser::load_iot_csv(const std::string& path) {
     std::size_t proto_col = index.count("proto") ? index["proto"] : header.size();
     std::size_t conn_state_col = index.count("conn_state") ? index["conn_state"] : header.size();
     std::size_t service_col = index.count("service") ? index["service"] : header.size();
+    std::size_t id_orig_h_col = index.count("id.orig_h") ? index["id.orig_h"] : header.size();
+    std::size_t id_resp_h_col = index.count("id.resp_h") ? index["id.resp_h"] : header.size();
+    std::size_t uid_col = index.count("uid") ? index["uid"] : header.size();
+    std::size_t ts_col = index.count("ts") ? index["ts"] : header.size();
 
     std::vector<LabeledSequence> samples;
     std::size_t line_number = 1;  // include header
@@ -193,11 +209,28 @@ std::vector<LabeledSequence> Parser::load_iot_csv(const std::string& path) {
 
         auto tokens = parse_delimited_line(line, delimiter);
         if (tokens.size() <= label_it->second) {
+            // malformed row; skip
             continue;
         }
 
         LabeledSequence sample;
         sample.id = "iot_line_" + std::to_string(line_number);
+        if (id_orig_h_col < tokens.size()) {
+            sample.host = tokens[id_orig_h_col];
+        }
+        if (id_resp_h_col < tokens.size()) {
+            sample.resp_host = tokens[id_resp_h_col];
+        }
+        if (uid_col < tokens.size()) {
+            sample.uid = tokens[uid_col];
+        }
+        if (ts_col < tokens.size()) {
+            try {
+                sample.ts = std::stod(tokens[ts_col]);
+            } catch (...) {
+                sample.ts = 0.0;
+            }
+        }
         sample.label = is_true_label(tokens[label_it->second]);
 
         auto add_symbol = [&](std::size_t column, const std::string& prefix) {

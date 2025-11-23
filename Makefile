@@ -1,18 +1,37 @@
 CXX := g++
 CXXFLAGS := -std=c++17 -Wall -Wextra -Wpedantic -Iinclude
 
+# Optional sanitizer build (use `make SANITIZE=1` to enable AddressSanitizer/UBSAN)
+ifdef SANITIZE
+CXXFLAGS := $(CXXFLAGS) -g -O1 -fsanitize=address,undefined -fno-omit-frame-pointer
+endif
+
 SRC_DIR := src
 OBJ_DIR := build
 BIN_DIR := bin
-TARGET := $(BIN_DIR)/automata_security
+
+# Discover main programs placed under src/<name>/main.cpp and build a
+# corresponding binary at bin/<name>. Only include files that actually
+# contain an `int main` definition to avoid building placeholders.
+MAIN_SRCS := $(shell grep -Rl "int main" $(SRC_DIR) 2>/dev/null | grep '/main.cpp' || true)
+MAIN_BINS := $(patsubst $(SRC_DIR)/%/main.cpp,$(BIN_DIR)/%,$(MAIN_SRCS))
 
 SRCS := $(shell find $(SRC_DIR) -name '*.cpp')
 OBJS := $(patsubst $(SRC_DIR)/%.cpp,$(OBJ_DIR)/%.o,$(SRCS))
 
-$(TARGET): $(OBJS)
-	@mkdir -p $(BIN_DIR)
-	$(CXX) $(CXXFLAGS) -o $@ $(OBJS)
+# library objects = all objects except the main.o files
+MAIN_OBJS := $(patsubst $(SRC_DIR)/%.cpp,$(OBJ_DIR)/%.o,$(MAIN_SRCS))
+LIB_OBJS := $(filter-out $(MAIN_OBJS),$(OBJS))
 
+# Build discovered main binaries. Default target builds all discovered bins.
+all: $(MAIN_BINS)
+
+# Build each binary from its main.o and the shared library objects
+$(BIN_DIR)/%: $(OBJ_DIR)/%/main.o $(LIB_OBJS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -o $@ $^
+
+# Generic object rule
 $(OBJ_DIR)/%.o: $(SRC_DIR)/%.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CXXFLAGS) -c $< -o $@
@@ -24,3 +43,24 @@ clean:
 
 run: $(TARGET)
 	$(TARGET)
+
+.PHONY: test
+# discover test sources recursively under tests/
+# use find to allow subdirectories (tests/chomsky/foo.cpp -> bin/chomsky/foo)
+TEST_SRCS := $(shell find tests -name '*.cpp')
+# corresponding binaries under bin/ preserving subdirectory paths
+TEST_BINS := $(patsubst tests/%.cpp,$(BIN_DIR)/%,$(TEST_SRCS))
+
+# minimal set of objects tests typically need; adjust if tests depend on more
+TEST_OBJS := $(OBJ_DIR)/automata/pta.o $(OBJ_DIR)/automata/dfa.o $(OBJ_DIR)/evaluator.o
+
+test: $(TEST_BINS)
+	@echo "Running tests..."
+	@for t in $(TEST_BINS); do \
+		echo "-> $$t"; \
+		$$t || exit $$?; \
+	done
+
+$(BIN_DIR)/%: tests/%.cpp $(TEST_OBJS)
+	@mkdir -p $(dir $@)
+	$(CXX) $(CXXFLAGS) -o $@ $(TEST_OBJS) $<

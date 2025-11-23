@@ -36,12 +36,7 @@ Running without arguments loads the default IoT dataset at `datasets/iotMalware/
 --train-ratio=0.7       Train/test fraction (0 < ratio < 1)
 --train-full            Train on entire dataset (skip split)
 --test=/path/to/file    Additional IoT dataset to evaluate (repeatable)
---export-definition=FILE  Write minimized DFA definition to FILE
---print-definition     Print minimized DFA definition to stdout
---seed=42               RNG seed for splitting
---export-dot=graph.dot  Write minimized DFA as Graphviz DOT
---version               Print version and exit
---help                  Show usage and exit
+--export-grammar=FILE  Write Chomsky Normal Form (CNF) grammar to FILE
 ```
 
 Example:
