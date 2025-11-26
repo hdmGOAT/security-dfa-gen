@@ -27,6 +27,14 @@ make
 make run
 ```
 
+Windows notes
+
+- The provided `Makefile` and build steps assume a Unix-like environment. On Windows you can either:
+	- Use WSL (recommended) and run `make` inside the WSL shell, or
+	- Use MSYS2 / MinGW or a Visual Studio toolchain to build the project and produce a Windows binary (e.g., `bin/api.exe`).
+
+If you build a native Windows binary, put it in `bin/` as `api.exe` so other components (backend) can locate and execute it.
+
 Running without arguments loads the default IoT dataset at `datasets/iotMalware/CTU-IoT-Malware-Capture-1-1conn.log.labeled.csv`, splits it 70/30, trains the automaton, minimizes it, and prints evaluation metrics.
 
 ## Command Line Options
