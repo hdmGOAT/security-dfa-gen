@@ -22,10 +22,13 @@ Datasets should be placed under the `datasets/` directory. Defaults match the sa
 
 ## Build & Run
 
+Build the primary tools (`api` and `generator`):
+
 ```bash
 make
-make run
 ```
+
+This produces `bin/api` (or `bin/api.exe` on Windows when using the `windows` target) and `bin/generator`.
 
 Windows notes
 
@@ -35,7 +38,9 @@ Windows notes
 
 If you build a native Windows binary, put it in `bin/` as `api.exe` so other components (backend) can locate and execute it.
 
-Running without arguments loads the default IoT dataset at `datasets/iotMalware/CTU-IoT-Malware-Capture-1-1conn.log.labeled.csv`, splits it 70/30, trains the automaton, minimizes it, and prints evaluation metrics.
+Running without arguments (where applicable) uses the default IoT dataset at `datasets/iotMalware/CTU-IoT-Malware-Capture-1-1conn.log.labeled.csv` for operations that accept datasets.
+
+Note: the standalone `simulator` CLI was removed — its core logic now lives in `include/core.hpp` and `src/core/simulator_core.cpp` and is used by the `api` program. If you need a separate simulator CLI again, reintroduce a `main` that links against the core code.
 
 ## Command Line Options
 
@@ -47,19 +52,28 @@ Running without arguments loads the default IoT dataset at `datasets/iotMalware/
 --export-grammar=FILE  Write Chomsky Normal Form (CNF) grammar to FILE
 ```
 
-Example:
+Examples:
+
+Run the API CLI (shows usage/help):
 
 ```bash
-./bin/automata_security --train-ratio=0.6 --test=datasets/iotMalware/CTU-IoT-Malware-Capture-3-1conn.log.labeled.csv
+./bin/api --help
+```
+
+Run the generator tool (if applicable):
+
+```bash
+./bin/generator --help
 ```
 
 ## Repository Layout
 
 ```
 include/        Public headers for automata, parser, evaluator
-src/            Module implementations and main entry point
+src/            Module implementations; core simulation logic under `src/core`
+bin/            Build outputs (api, generator)
 datasets/       Sample IoT-23 CSV / log captures
-Makefile        Build script producing bin/automata_security
+Makefile        Build script
 ```
 
 ## Next Steps

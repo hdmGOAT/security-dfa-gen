@@ -19,11 +19,11 @@ namespace automata_security {
 namespace {
 
 struct CommandLineOptions {
-    std::string input_path;
+    std::vector<std::string> input_paths;
     std::vector<std::string> test_paths;
     std::string export_dot_path;
     std::string export_definition_path;
-        std::string export_grammar_path;
+    std::string export_grammar_path;
     double train_ratio{kDefaultTrainRatio};
     unsigned int seed{42U};
     bool train_full{false};
@@ -41,7 +41,7 @@ void print_usage(const char* program) {
               << " [--input=FILE] [--train-ratio=0.7]"
                  " [--seed=42] [--export-dot=automaton.dot]\n";
     std::cout << "Options:\n"
-              << "  --input=FILE        Override IoT dataset file path.\n"
+              << "  --input=FILE        Override IoT dataset file path (repeatable).\n"
                   << "  --train-ratio=VAL   Train/test split ratio (0 < VAL < 1).\n"
                   << "  --train-full        Train on entire dataset (ignore split).\n"
                   << "  --test=FILE         Additional dataset file to evaluate on." \
@@ -77,7 +77,7 @@ bool parse_argument(const std::string& arg,
     };
 
     if (auto value = parse_key_value(arg, "--input=")) {
-        opts.input_path = *value;
+        opts.input_paths.push_back(*value);
         return true;
     }
     if (auto value = parse_key_value(arg, "--train-ratio=")) {
@@ -116,10 +116,6 @@ bool parse_argument(const std::string& arg,
     std::cerr << "Unknown option: " << arg << "\n";
     print_usage(program);
     return false;
-}
-
-std::string resolve_dataset_path(const CommandLineOptions& opts) {
-    return opts.input_path.empty() ? kDefaultIotDataset : opts.input_path;
 }
 
 std::vector<LabeledSequence> load_dataset(const CommandLineOptions& opts,
@@ -206,16 +202,29 @@ int main(int argc, char* argv[]) {
     }
 
     try {
-    const std::string dataset_path = resolve_dataset_path(options);
-    std::cout << "[1/5] Loading IoT dataset from: " << dataset_path << std::endl;
-
-        auto samples = load_dataset(options, dataset_path);
-        if (samples.empty()) {
-            std::cerr << "No samples loaded. Check dataset path and format." << std::endl;
-            return 1;
+        if (options.input_paths.empty()) {
+            options.input_paths.push_back(kDefaultIotDataset);
         }
 
-        std::cout << "      Loaded " << samples.size() << " sequences." << std::endl;
+        std::vector<LabeledSequence> samples;
+        for (const auto& path : options.input_paths) {
+            std::cout << "[1/5] Loading IoT dataset from: " << path << std::endl;
+            auto current_samples = load_dataset(options, path);
+            if (current_samples.empty()) {
+                std::cerr << "Warning: No samples loaded from " << path << std::endl;
+            } else {
+                std::cout << "      Loaded " << current_samples.size() << " sequences." << std::endl;
+                samples.insert(samples.end(),
+                               std::make_move_iterator(current_samples.begin()),
+                               std::make_move_iterator(current_samples.end()));
+            }
+        }
+
+        if (samples.empty()) {
+            std::cerr << "No samples loaded from any input. Check dataset paths and format." << std::endl;
+            return 1;
+        }
+        std::cout << "      Total loaded: " << samples.size() << " sequences." << std::endl;
 
         auto feature_summary = summarize_features(samples);
         std::cout << "      Features (" << feature_summary.unique_count << " unique): ";
@@ -301,7 +310,7 @@ int main(int argc, char* argv[]) {
 
         if (!local_test_sequences.empty()) {
             EvaluationResult result;
-            result.source_path = dataset_path;
+            result.source_path = "combined_inputs";
             result.test_size = local_test_sequences.size();
             result.metrics = evaluate(dfa, local_test_sequences);
             result.metrics.states_before = states_before;
@@ -332,8 +341,10 @@ int main(int argc, char* argv[]) {
         std::cout << std::fixed << std::setprecision(4);
         std::cout << "\nSummary" << std::endl;
         std::cout << "=======" << std::endl;
-    std::cout << "Dataset: IoT\n";
-    std::cout << "Path: " << dataset_path << "\n";
+        std::cout << "Dataset: IoT (Multiple Inputs)\n";
+        for (const auto& p : options.input_paths) {
+            std::cout << "  Input: " << p << "\n";
+        }
         std::cout << "Samples: " << samples.size() << " (train=" << train_sequences.size();
         if (!local_test_sequences.empty()) {
             std::cout << ", test=" << local_test_sequences.size();

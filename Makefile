@@ -15,20 +15,19 @@ SRC_DIR := src
 OBJ_DIR := build
 BIN_DIR := bin
 
-# Discover main programs placed under src/<name>/main.cpp and build a
-# corresponding binary at bin/<name>. Only include files that actually
-# contain an `int main` definition to avoid building placeholders.
-MAIN_SRCS := $(shell grep -Rl "int main" $(SRC_DIR) 2>/dev/null | grep '/main.cpp' || true)
-MAIN_BINS := $(patsubst $(SRC_DIR)/%/main.cpp,$(BIN_DIR)/%$(OUT_EXT),$(MAIN_SRCS))
+# Explicit targets: only build the `api` and `generator` programs by default.
+# This avoids building the legacy `simulator` binary which we no longer ship.
+TARGETS := api generator
+MAIN_BINS := $(patsubst %,$(BIN_DIR)/%$(OUT_EXT),$(TARGETS))
 
 SRCS := $(shell find $(SRC_DIR) -name '*.cpp')
 OBJS := $(patsubst $(SRC_DIR)/%.cpp,$(OBJ_DIR)/%.o,$(SRCS))
 
 # library objects = all objects except the main.o files
-MAIN_OBJS := $(patsubst $(SRC_DIR)/%.cpp,$(OBJ_DIR)/%.o,$(MAIN_SRCS))
+# MAIN_OBJS are the per-target main.o files derived from `TARGETS`.
+MAIN_OBJS := $(patsubst %,$(OBJ_DIR)/%/main.o,$(TARGETS))
 LIB_OBJS := $(filter-out $(MAIN_OBJS),$(OBJS))
-
-# Build discovered main binaries. Default target builds all discovered bins.
+# Build the explicit main binaries. Default target builds only `api` and `generator`.
 all: $(MAIN_BINS)
 
 # Build each binary from its main.o and the shared library objects

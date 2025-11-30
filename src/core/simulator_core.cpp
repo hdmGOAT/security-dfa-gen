@@ -1,4 +1,4 @@
-#include "simulator/core.hpp"
+#include "core.hpp"
 
 #include <algorithm>
 #include <fstream>
