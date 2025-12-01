@@ -1,0 +1,36 @@
+# Chomsky Normal Form (CNF) grammar generated from DFA
+Terminals: {proto=icmp, proto=tcp, proto=udp, service=dhcp, service=dns, service=http, service=irc, service=ssh, service=ssl, state=OTH, state=REJ, state=RSTO, state=RSTOS0, state=RSTR, state=RSTRH, state=S0, state=S1, state=S2, state=S3, state=SF, state=SH, state=SHR}
+Nonterminals: {S, A0, A1, A2, A3, A4, A5, A6, A7}
+Start: S
+Productions:
+  T0 -> proto=icmp
+  T1 -> proto=tcp
+  T2 -> proto=udp
+  T3 -> service=dhcp
+  T4 -> service=dns
+  T5 -> service=http
+  T6 -> service=irc
+  T7 -> service=ssh
+  T8 -> service=ssl
+  T9 -> state=OTH
+  T10 -> state=REJ
+  T11 -> state=RSTO
+  T12 -> state=RSTOS0
+  T13 -> state=RSTR
+  T14 -> state=RSTRH
+  T15 -> state=S0
+  T16 -> state=S1
+  T17 -> state=S2
+  T18 -> state=S3
+  T19 -> state=SF
+  T20 -> state=SH
+  T21 -> state=SHR
+  A0 -> T0 A6 | T1 A6 | T10 A6 | T11 A6 | T12 A6 | T13 A6 | T14 A6 | T15 A6 | T16 A6 | T17 A6 | T18 A6 | T19 A6 | T2 A6 | T20 A6 | T21 A6 | T3 A6 | T4 A6 | T5 A5 | T6 A5 | T7 A5 | T8 A6 | T9 A6 | service=http | service=irc | service=ssh
+  A1 -> T0 A6 | T1 A6 | T10 A6 | T11 A6 | T12 A6 | T13 A6 | T14 A6 | T15 A6 | T16 A6 | T17 A6 | T18 A6 | T19 A6 | T2 A6 | T20 A6 | T21 A6 | T3 A6 | T4 A6 | T5 A5 | T6 A6 | T7 A6 | T8 A6 | T9 A6 | service=http
+  A2 -> T0 A6 | T1 A6 | T10 A6 | T11 A6 | T12 A6 | T13 A6 | T14 A6 | T15 A6 | T16 A6 | T17 A6 | T18 A6 | T19 A6 | T2 A6 | T20 A6 | T21 A6 | T3 A6 | T4 A6 | T5 A6 | T6 A5 | T7 A6 | T8 A6 | T9 A6 | service=irc
+  A3 -> T0 A6 | T1 A6 | T10 A5 | T11 A1 | T12 A6 | T13 A7 | T14 A5 | T15 A5 | T16 A2 | T17 A5 | T18 A4 | T19 A0 | T2 A6 | T20 A6 | T21 A6 | T3 A6 | T4 A6 | T5 A6 | T6 A6 | T7 A6 | T8 A6 | T9 A5 | state=OTH | state=REJ | state=RSTR | state=RSTRH | state=S0 | state=S1 | state=S2 | state=SF
+  A4 -> T0 A6 | T1 A6 | T10 A6 | T11 A6 | T12 A6 | T13 A6 | T14 A6 | T15 A6 | T16 A6 | T17 A6 | T18 A6 | T19 A6 | T2 A6 | T20 A6 | T21 A6 | T3 A6 | T4 A6 | T5 A6 | T6 A5 | T7 A6 | T8 A6 | T9 A6 | service=irc
+  A5 -> T0 A6 | T1 A6 | T10 A6 | T11 A6 | T12 A6 | T13 A6 | T14 A6 | T15 A6 | T16 A6 | T17 A6 | T18 A6 | T19 A6 | T2 A6 | T20 A6 | T21 A6 | T3 A6 | T4 A6 | T5 A6 | T6 A6 | T7 A6 | T8 A6 | T9 A6
+  S -> T0 A6 | T1 A3 | T10 A6 | T11 A6 | T12 A6 | T13 A6 | T14 A6 | T15 A6 | T16 A6 | T17 A6 | T18 A6 | T19 A6 | T2 A6 | T20 A6 | T21 A6 | T3 A6 | T4 A6 | T5 A6 | T6 A6 | T7 A6 | T8 A6 | T9 A6
+  A6 -> T0 A6 | T1 A6 | T10 A6 | T11 A6 | T12 A6 | T13 A6 | T14 A6 | T15 A6 | T16 A6 | T17 A6 | T18 A6 | T19 A6 | T2 A6 | T20 A6 | T21 A6 | T3 A6 | T4 A6 | T5 A6 | T6 A6 | T7 A6 | T8 A6 | T9 A6
+  A7 -> T0 A6 | T1 A6 | T10 A6 | T11 A6 | T12 A6 | T13 A6 | T14 A6 | T15 A6 | T16 A6 | T17 A6 | T18 A6 | T19 A6 | T2 A6 | T20 A6 | T21 A6 | T3 A6 | T4 A6 | T5 A5 | T6 A5 | T7 A6 | T8 A6 | T9 A6 | service=http | service=irc
