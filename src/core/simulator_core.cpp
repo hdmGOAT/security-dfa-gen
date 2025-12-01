@@ -74,6 +74,11 @@ bool load_cnf_grammar(const std::string& path, GrammarDFA& out, std::string& err
     std::vector<std::pair<std::string, std::string>> terminal_rules; // lhs -> terminal
     std::unordered_set<std::string> nonterminals;
     std::string line;
+    // Parse CNF grammar line-by-line. Expect lines like:
+    //   T0 -> "proto=tcp"
+    //   S -> T0 A1 | "proto=udp"
+    // We collect terminal helper mappings (Tn -> terminal), binary rules
+    // (nonterminal -> Tn Nonterm), and single-terminal productions.
     while (std::getline(in, line)) {
         line = trim(line);
         if (line.empty()) continue;
@@ -82,27 +87,31 @@ bool load_cnf_grammar(const std::string& path, GrammarDFA& out, std::string& err
         if (arrow == std::string::npos) continue;
         std::string lhs = trim(line.substr(0, arrow));
         std::string rhs = trim(line.substr(arrow + 2));
-        // terminal helper
+
+        // Terminal helper Tn -> terminal: record mapping Tn -> terminal string
         if (lhs.size() > 0 && lhs[0] == 'T') {
-            // rhs might be quoted; take first token
+            // rhs might be quoted; take first token and unquote it
             rhs = trim(rhs);
             rhs = unquote(rhs);
             T_to_term[lhs] = rhs;
-            // nonterminals.insert(lhs); // Don't add Tn as states
+            // Do not treat Tn as a grammar nonterminal to be converted to DFA states
             continue;
         }
-        // lhs is nonterminal
+
+        // Otherwise, lhs is a grammar nonterminal. Split RHS alternatives by '|'
         nonterminals.insert(lhs);
-        // split alternatives
         size_t pos = 0;
         while (pos < rhs.size()) {
             auto next = rhs.find('|', pos);
             std::string alt = (next == std::string::npos) ? rhs.substr(pos) : rhs.substr(pos, next - pos);
             alt = trim(alt);
+
             if (alt == "ε") {
+                // Epsilon production marks the LHS as accepting
                 terminal_rules.emplace_back(lhs, "ε");
             } else {
-                // tokenise by whitespace
+                // Tokenize alternative by whitespace; CNF alternatives are either
+                // a single terminal/Tn or a pair (Tn Nonterm)
                 std::istringstream iss(alt);
                 std::vector<std::string> toks;
                 std::string tk;
@@ -110,16 +119,18 @@ bool load_cnf_grammar(const std::string& path, GrammarDFA& out, std::string& err
                 if (toks.size() == 1) {
                     std::string atom = toks[0];
                     if (!atom.empty() && atom[0] == 'T') {
-                        // reference to Tn -> terminal
+                        // Reference to Tn; will be resolved via T_to_term
                         terminal_rules.emplace_back(lhs, atom);
                     } else {
+                        // Inline terminal (possibly quoted)
                         terminal_rules.emplace_back(lhs, unquote(atom));
                     }
                 } else if (toks.size() == 2) {
-                    // expect Tn Nonterm
+                    // Binary production expected: record as two-part RHS
                     binary_rules.emplace_back(lhs, toks[0] + " " + toks[1]);
                 }
             }
+
             if (next == std::string::npos) break;
             pos = next + 1;
         }
@@ -154,7 +165,10 @@ bool load_cnf_grammar(const std::string& path, GrammarDFA& out, std::string& err
         } else {
             term = atom;
         }
-        out.add_transition(lhs, term, "Accept");
+            // Map terminal-producing nonterminals to the Accept state using the
+            // resolved terminal token. This creates a transition that consumes the
+            // specific terminal and reaches the accepting sink.
+            out.add_transition(lhs, term, "Accept");
     }
 
     // apply binary rules -> create transitions: lhs --terminal--> rhs_state
@@ -171,7 +185,11 @@ bool load_cnf_grammar(const std::string& path, GrammarDFA& out, std::string& err
         } else {
             term = unquote(t0);
         }
-        out.add_transition(lhs, term, t1);
+            // Binary production (Tn A#) becomes a transition labeled with the
+            // resolved terminal to the nonterminal state (t1). This encodes the
+            // CNF RHS as a two-step handshake in the DFA-like structure used for
+            // derivation tracing.
+            out.add_transition(lhs, term, t1);
     }
 
     return true;

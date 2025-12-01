@@ -17,6 +17,27 @@ using namespace automata_security;
 // They are declared in `utils.hpp` and implemented in `utils.cpp` to keep
 // this file focused on the core algorithmic simulation and CLI logic.
 
+// -----------------------------------------------------------------------------
+// api/main.cpp - CLI helper used by the Go backend and for quick inspection
+//
+// Modes supported (select with `--mode <name>`):
+//  - graph:  Parse a DOT file (DFA) and emit a JSON structure { nodes, edges }
+//            Nodes include `is_start` and `is_accepting` flags. Used by backend
+//            to power the visualizer.
+//  - derivation: Given a CNF regular grammar and a comma-separated input sequence,
+//            produce a human-readable derivation trace (used to show how a token
+//            sequence maps to grammar productions).
+//  - dfa:    Load a DOT DFA and step through comma-separated symbols; emits
+//            a list of transitions (current_state, symbol, next_state) and a final
+//            is_malicious flag based on whether the final state is accepting.
+//  - pda:    Load a PDA (DOT) and simulate with explicit stack operations; returns
+//            a trace of PUSH/POP/NO_OP operations and whether the input is accepted.
+//
+// The code below intentionally keeps parsing and JSON formatting code compact
+// so it can be run as a portable CLI by the Go backend (`Runner`) which expects
+// JSON output when `--json` is provided.
+// -----------------------------------------------------------------------------
+
 // --- PDA Simulation ---
 
 struct SimulationState {
@@ -26,91 +47,106 @@ struct SimulationState {
     std::vector<PDAStep> trace;
 };
 
+// simulate_pda: breadth-first exploration of PDA control states and stacks
+// Returns the first accepting trace found, or the most-progressing trace when
+// no accepting run exists (helps the UI show where execution failed).
+// simulate_pda performs a breadth-first search over PDA configurations.
+// We explore possible transitions non-deterministically and return the first
+// accepting trace found. If no accepting run exists, we return the "best"
+// trace (the one that consumed the most input) to help UI debugging.
 PDATraceResult simulate_pda(const PDA& pda, const std::vector<std::string>& input) {
+    // BFS queue of configurations: (state index, next input index, stack, trace so far)
     std::deque<SimulationState> queue;
     queue.push_back({pda.start, 0, {}, {}});
-    
-    size_t max_steps = 50000; // Safety limit
+
+    size_t max_steps = 50000; // Safety limit to prevent pathological loops
     size_t steps_count = 0;
-    // Keep best (most-progressing) trace so we can return it when no accepting run is found
+
+    // Track the best (furthest-progressing) partial trace so we can return it
+    // when no accepting run is found; this improves UX by showing where the
+    // PDA got stuck.
     size_t best_input_consumed = 0;
     std::vector<PDAStep> best_trace;
-    
+
     while(!queue.empty()) {
-        if (steps_count++ > max_steps) break;
-        
+        if (steps_count++ > max_steps) break; // bail out if too many steps
+
         SimulationState current = queue.front();
         queue.pop_front();
 
-        // Track the best progress (most input consumed) and remember its trace
+        // Update best progress
         if (current.input_idx > best_input_consumed) {
             best_input_consumed = current.input_idx;
             best_trace = current.trace;
         }
-        
+
+        // Accepting condition: consumed all input and in accepting control state
         if (current.input_idx == input.size() && pda.states[current.state_idx].accepting) {
             return {true, current.trace};
         }
-        
+
         const auto& state = pda.states[current.state_idx];
+        // Examine each outgoing transition from the current control state
         for (const auto& trans : state.transitions) {
-            // Check input match
+            // Determine if the transition matches the current input symbol
             bool input_match = false;
             bool consumes_input = false;
-            
+
             if (trans.input_symbol == "ε") {
+                // ε-transitions do not consume input
                 input_match = true;
             } else if (current.input_idx < input.size() && trans.input_symbol == input[current.input_idx]) {
                 input_match = true;
                 consumes_input = true;
             }
-            
-            if (!input_match) continue;
-            
-            // Check stack match (pop)
+
+            if (!input_match) continue; // skip if input doesn't match
+
+            // Check stack/pop condition: either pop ε or top matches the required symbol
             bool stack_match = false;
             if (trans.pop_symbol == "ε") {
                 stack_match = true;
             } else if (!current.stack.empty() && current.stack.back() == trans.pop_symbol) {
                 stack_match = true;
             }
-            
-            if (!stack_match) continue;
-            
-            // Apply transition
+
+            if (!stack_match) continue; // skip if stack doesn't match
+
+            // Apply the transition to form a new configuration
             SimulationState next = current;
             next.state_idx = trans.next_state;
             if (consumes_input) next.input_idx++;
-            
-            // Pop
+
+            // Pop from stack if required
             if (trans.pop_symbol != "ε") {
                 next.stack.pop_back();
             }
-            
-            // Push (reverse order to maintain stack order)
-            // If push is "A B", we assume A is top. So push B then A.
+
+            // Push symbols onto stack in reverse order so the first symbol from the
+            // RHS becomes the top of the stack.
             for (auto it = trans.push_symbols.rbegin(); it != trans.push_symbols.rend(); ++it) {
                 next.stack.push_back(*it);
             }
-            
-            // Record trace
+
+            // Record the PDA step for tracing/debugging
             PDAStep step;
             step.current_state = state.name;
             step.next_state = pda.states[trans.next_state].name;
             step.symbol = consumes_input ? input[current.input_idx] : "ε";
             step.stack_after = next.stack;
-            
+
             if (!trans.push_symbols.empty()) step.op = "PUSH";
             else if (trans.pop_symbol != "ε") step.op = "POP";
             else step.op = "NO_OP";
-            
+
             next.trace.push_back(step);
-            
+
+            // Enqueue next configuration for exploration
             queue.push_back(next);
         }
     }
-    
-    // No accepting run found: return the best trace collected (may be empty)
+
+    // No accepting run found: return the best partial trace to help debugging
     return {false, best_trace};
 }
 
@@ -138,6 +174,11 @@ int main(int argc, char** argv) {
         }
     }
 
+    // Mode: graph
+    // Parse a DOT file line-by-line and assemble JSON arrays for nodes and edges.
+    // The parser looks for the special `__start -> <node>;` line to detect the
+    // start state and uses node attributes (label, doublecircle) to set
+    // descriptive fields for the UI.
     if (mode == "graph") {
         std::ifstream in(dot_path);
         if (!in.is_open()) print_error("Failed to open DOT file: " + dot_path);
@@ -150,13 +191,17 @@ int main(int argc, char** argv) {
         std::string start_node;
         std::string line;
 
+        // Read DOT file line-by-line and detect special markers, node and edge
+        // declarations. We perform simple string matching rather than full DOT
+        // parsing for robustness and portability.
         while (std::getline(in, line)) {
-            // Trim
+            // Trim whitespace from both ends
             line.erase(0, line.find_first_not_of(" \t"));
             line.erase(line.find_last_not_of(" \t") + 1);
 
+            // Detect start edge: `__start -> sX;` and remember the target id.
             if (line.find("__start ->") == 0) {
-                // __start -> s4;
+                // Example: `__start -> s4;`
                 size_t arrow = line.find("->");
                 size_t semi = line.find(";");
                 if (arrow != std::string::npos && semi != std::string::npos) {
@@ -164,35 +209,41 @@ int main(int argc, char** argv) {
                     start_node.erase(0, start_node.find_first_not_of(" \t"));
                     start_node.erase(start_node.find_last_not_of(" \t") + 1);
                 }
+
+            // Edge lines: `s0 -> s5 [label="..."];` (ignore the __start pseudo-node)
             } else if (line.find("->") != std::string::npos) {
-                // Edge: s0 -> s5 [label="..."];
-                if (line.find("__start") == 0) continue;
-                
+                if (line.find("__start") == 0) continue; // already handled
+
                 size_t arrow = line.find("->");
                 size_t bracket = line.find("[");
                 size_t label_pos = line.find("label=\"");
-                
+
+                // We expect an edge line with a bracketed attribute list and a
+                // label attribute; if these are not present we skip the line.
                 if (arrow != std::string::npos && bracket != std::string::npos && label_pos != std::string::npos) {
+                    // Extract source and target node ids
                     std::string src = line.substr(0, arrow);
                     std::string tgt = line.substr(arrow + 2, bracket - (arrow + 2));
-                    
-                    // Trim src/tgt
+
+                    // Trim whitespace from node ids
                     src.erase(0, src.find_first_not_of(" \t"));
                     src.erase(src.find_last_not_of(" \t") + 1);
                     tgt.erase(0, tgt.find_first_not_of(" \t"));
                     tgt.erase(tgt.find_last_not_of(" \t") + 1);
-                    
+
+                    // Extract label value inside label="..."
                     size_t label_end = line.find("\"", label_pos + 7);
                     std::string lbl = line.substr(label_pos + 7, label_end - (label_pos + 7));
-                    
+
                     std::ostringstream e;
                     e << "{ \"source\": \"" << json_escape(src) << "\", ";
                     e << "\"target\": \"" << json_escape(tgt) << "\", ";
                     e << "\"label\": \"" << json_escape(lbl) << "\" }";
                     edges_json.push_back(e.str());
                 }
+
+            // Node declaration lines: `s0 [label="s0\n+..." ...];`
             } else if (line.find("[") != std::string::npos && line.find("label=") != std::string::npos) {
-                // Node: s0 [label="...", ...];
                 if (line.find("__start") == 0) continue;
                 if (line.find("node [") == 0) continue;
 
@@ -200,15 +251,19 @@ int main(int argc, char** argv) {
                 std::string id = line.substr(0, bracket);
                 id.erase(0, id.find_first_not_of(" \t"));
                 id.erase(id.find_last_not_of(" \t") + 1);
-                
+
                 size_t label_pos = line.find("label=\"");
                 if (label_pos != std::string::npos) {
                     size_t label_end = line.find("\"", label_pos + 7);
                     std::string label_raw = line.substr(label_pos + 7, label_end - (label_pos + 7));
+                    // Label raw contains the visible label (we take only the first line before \n)
                     std::string label = label_raw.substr(0, label_raw.find("\\n"));
-                    
-                    bool is_accepting = line.find("doublecircle") != std::string::npos;
-                    
+
+                        // Detect accepting (doublecircle) style. DOT exports use the
+                        // doublecircle shape attribute to indicate accepting states
+                        // in the visualizer, so we detect that text here.
+                        bool is_accepting = line.find("doublecircle") != std::string::npos;
+
                     std::ostringstream n;
                     n << "{ \"id\": \"" << json_escape(id) << "\", ";
                     n << "\"label\": \"" << json_escape(label) << "\", ";
@@ -244,7 +299,12 @@ int main(int argc, char** argv) {
         }
         std::cout << "] }" << std::endl;
 
-    } else if (mode == "derivation") {
+    }
+    // Mode: derivation
+    // Given a CNF regular grammar, produce a simple left-to-right derivation
+    // trace for a comma-separated input sequence. The algorithm picks matching
+    // productions heuristically to produce a plausible derivation for display.
+    else if (mode == "derivation") {
         Grammar g;
         if (!load_grammar_for_derivation(grammar_path, g)) {
             print_error("Failed to load grammar");
@@ -306,19 +366,19 @@ int main(int argc, char** argv) {
             // Selection logic
             const std::vector<std::string>* selected_prod = nullptr;
             std::string selected_next_nt;
-
+            // Selection logic: heuristically pick a production among candidates.
+            // - If we're at the last input symbol, prefer a terminating
+            //   production (no next nonterminal) so the derivation can finish.
+            // - Otherwise prefer productions that transition to another
+            //   nonterminal so subsequent symbols can be matched.
             for (const auto& cand : candidates) {
                 if (is_last) {
-                    // If last symbol, prefer terminating production (no next_nt)
                     if (cand.next_nt.empty()) {
                         selected_prod = &cand.prod;
                         selected_next_nt = cand.next_nt;
                         break; 
                     }
                 } else {
-                    // If not last, prefer non-terminating? 
-                    // Actually, in regular grammar, we usually transition to a state.
-                    // If we pick terminating, we can't process next symbols.
                     if (!cand.next_nt.empty()) {
                         selected_prod = &cand.prod;
                         selected_next_nt = cand.next_nt;
@@ -328,6 +388,9 @@ int main(int argc, char** argv) {
             }
             
             // Fallback: if no preferred found, just take the first one (or any)
+            // Fallback: if no heuristic selection succeeded, fall back to the
+            // first candidate. This keeps the derivation monotonic rather than
+            // failing fast and yields a plausible trace for display.
             if (!selected_prod && !candidates.empty()) {
                 selected_prod = &candidates[0].prod;
                 selected_next_nt = candidates[0].next_nt;
@@ -385,14 +448,23 @@ int main(int argc, char** argv) {
         }
         std::cout << "] }" << std::endl;
 
-    } else if (mode == "dfa") {
+    }
+    // Mode: dfa
+    // Load a DFA from DOT (via load_dot_dfa) and step through comma-separated
+    // symbols starting from the provided state (or the DFA start state if none
+    // supplied). Emit per-symbol steps and final classification (is_malicious).
+    else if (mode == "dfa") {
         GrammarDFA gdfa;
         std::string err;
         if (!load_dot_dfa(dot_path, gdfa, err)) {
             print_error("Failed to load DFA from DOT: " + err);
         }
 
-        if (state.empty()) state = gdfa.names[gdfa.start];
+    // If no explicit start state was provided via `--state`, start from
+    // the grammar/DFA's canonical start (typically 'S'). The backend UI
+    // can pass a specific state name to resume stepping from an arbitrary
+    // node for interactive debugging.
+    if (state.empty()) state = gdfa.names[gdfa.start];
         
         // Input is comma separated symbols
         std::vector<std::string> seq;
@@ -424,11 +496,11 @@ int main(int argc, char** argv) {
                 cur_idx = it->second;
                 next_state_name = gdfa.names[cur_idx];
             } else {
-                // No transition found, stay in current state but mark as error/stuck?
-                // For visualization, we'll just say next state is null or same?
-                // Let's return the current state as next state but maybe we should indicate error.
-                // However, the user wants to see it "break" or stop.
-                // Let's just keep it at current state for now, effectively ignoring the input.
+                // No transition found for this symbol. Historically the CLI
+                // simply kept the DFA in the same visual state which allows the
+                // UI to show the symbol that couldn't be consumed. A more
+                // strict behavior would move to a sink or report an error,
+                // but keeping the current state preserves prior visual traces.
                 next_state_name = current_state_name; 
             }
 
@@ -443,7 +515,11 @@ int main(int argc, char** argv) {
         std::cout << "\"is_malicious\": " << (is_malicious ? "true" : "false") << ", ";
         std::cout << "\"label\": \"" << (is_malicious ? "Malicious" : "Benign") << "\" }" << std::endl;
 
-    } else if (mode == "pda") {
+    }
+    // Mode: pda
+    // Load a PDA and simulate it using `simulate_pda`. The output is a JSON
+    // sequence of stack operations and a final `valid` boolean.
+    else if (mode == "pda") {
         // Load PDA from DOT and simulate using structured PDA transitions
         PDA pda;
         std::string err;

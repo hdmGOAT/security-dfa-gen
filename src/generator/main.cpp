@@ -68,9 +68,12 @@ bool parse_argument(const std::string& arg,
         std::exit(0);
     }
 
+    // Helper: parse --key=value style options.
+    // Returns the value part when `option` starts with `prefix`, otherwise null.
     auto parse_key_value = [](const std::string& option,
                               const std::string& prefix) -> std::optional<std::string> {
         if (option.rfind(prefix, 0) == 0) {
+            // return substring after the prefix
             return option.substr(prefix.size());
         }
         return std::nullopt;
@@ -121,6 +124,8 @@ bool parse_argument(const std::string& arg,
 std::vector<LabeledSequence> load_dataset(const CommandLineOptions& opts,
                                           const std::string& path) {
     (void)opts;
+    // Wrap dataset parsing behind a function so we can swap parser implementations
+    // or add pre/post-processing later. Currently uses the CSV IoT parser.
     return Parser::load_iot_csv(path);
 }
 
@@ -135,6 +140,8 @@ void export_dot_if_requested(const DFA& dfa, const std::string& path) {
         return;
     }
 
+    // Write the DOT serialization of the minimized DFA to disk. This DOT includes
+    // the `__start -> sX` marker and per-state labels used by the visualizer.
     std::ofstream output(path);
     if (!output.is_open()) {
         throw std::runtime_error("Failed to open DOT output file: " + path);
@@ -148,6 +155,9 @@ void export_grammar_if_requested(const DFA& dfa, const std::string& path) {
         return;
     }
 
+    // Dump a Chomsky Normal Form (CNF) grammar derived from the DFA. The grammar
+    // is useful for showing derivations and mapping DFA behavior back to a
+    // grammar view (useful for teaching/inspection).
     std::ofstream output(path);
     if (!output.is_open()) {
         throw std::runtime_error("Failed to open grammar output file: " + path);
@@ -163,17 +173,23 @@ FeatureSummary summarize_features(const std::vector<LabeledSequence>& samples,
         return summary;
     }
 
+
+    // Collect a set of unique feature tokens across all samples. Using an
+    // unordered_set ensures deduplication; reserve a modest bucket count to
+    // reduce reallocations for typical dataset sizes.
     std::unordered_set<std::string> unique;
     unique.reserve(256);
 
     for (const auto& sample : samples) {
         for (const auto& symbol : sample.symbols) {
+            // Each symbol is expected to be a short token such as `proto=tcp`.
             unique.insert(symbol);
         }
     }
 
     summary.unique_count = unique.size();
 
+    // Sort tokens for deterministic display.
     std::vector<std::string> sorted(unique.begin(), unique.end());
     std::sort(sorted.begin(), sorted.end());
 
@@ -190,6 +206,22 @@ FeatureSummary summarize_features(const std::vector<LabeledSequence>& samples,
 }  // namespace
 }  // namespace automata_security
 
+// -----------------------------------------------------------------------------
+// generator/main.cpp - High-level flow (step-by-step)
+//
+// This program drives the training pipeline:
+// 1) Parse command-line options
+// 2) Load one or more IoT CSV datasets into labeled sequences
+// 3) (Optional) split into train/test or train on full dataset
+// 4) Build a Prefix Tree Acceptor (PTA) from training sequences
+// 5) Convert PTA -> DFA and ensure total transitions (add sink if needed)
+// 6) Minimize DFA (Hopcroft-style) and optionally export DOT/grammar
+// 7) Evaluate on test partitions and holdouts, print summary
+//
+// Comments in the main() implementation mark these steps so readers can follow
+// the pipeline and find the corresponding implementation in the code below.
+// -----------------------------------------------------------------------------
+
 int main(int argc, char* argv[]) {
     using namespace automata_security;
 
@@ -202,11 +234,13 @@ int main(int argc, char* argv[]) {
     }
 
     try {
+        // Step 1: Determine dataset inputs (command-line override or default)
         if (options.input_paths.empty()) {
             options.input_paths.push_back(kDefaultIotDataset);
         }
 
         std::vector<LabeledSequence> samples;
+        // Step 2: Load datasets into in-memory labeled sequences
         for (const auto& path : options.input_paths) {
             std::cout << "[1/5] Loading IoT dataset from: " << path << std::endl;
             auto current_samples = load_dataset(options, path);
@@ -220,6 +254,7 @@ int main(int argc, char* argv[]) {
             }
         }
 
+        // Sanity check: ensure we actually loaded samples
         if (samples.empty()) {
             std::cerr << "No samples loaded from any input. Check dataset paths and format." << std::endl;
             return 1;
@@ -245,14 +280,17 @@ int main(int argc, char* argv[]) {
             std::cout << std::endl;
         }
 
+        // Step 3: Train/test split (or train on full dataset when requested)
         std::vector<LabeledSequence> train_sequences;
         std::vector<LabeledSequence> local_test_sequences;
 
         if (options.train_full) {
+            // Train on all samples (no split)
             train_sequences = samples;
             std::cout << "[2/6] Training on entire dataset (" << train_sequences.size()
                       << " sequences)." << std::endl;
         } else {
+            // Create a randomized train/test split with a reproducible seed
             std::cout << "[2/6] Splitting dataset with train_ratio=" << options.train_ratio
                       << " and seed=" << options.seed << std::endl;
             auto split = train_test_split(samples, options.train_ratio, options.seed);
@@ -266,19 +304,30 @@ int main(int argc, char* argv[]) {
                       << ", Test: " << local_test_sequences.size() << std::endl;
         }
 
-        std::cout << "[3/6] Building Prefix Tree Acceptor (PTA)..." << std::endl;
+    // Step 4: Build the Prefix Tree Acceptor (PTA) from training sequences.
+    // The PTA is a trie where each path corresponds to a training sequence;
+    // nodes accumulate positive/negative counts so later we can derive an
+    // acceptance decision for each node when converting to a DFA.
+    std::cout << "[3/6] Building Prefix Tree Acceptor (PTA)..." << std::endl;
 
-        PTA pta;
-        pta.build(train_sequences);
-        std::cout << "      PTA states: " << pta.nodes().size() << std::endl;
+    PTA pta;
+    pta.build(train_sequences);
+    std::cout << "      PTA states: " << pta.nodes().size() << std::endl;
 
-        std::cout << "[4/6] Constructing DFA from PTA and ensuring total transitions..." << std::endl;
-        DFA dfa = DFA::from_pta(pta);
-        const std::size_t states_before = dfa.states().size();
+    // Step 5: Convert PTA -> DFA and ensure completeness of the transition function.
+    // Missing transitions for some symbols are redirected to a sink (dead)
+    // state to make the DFA total; this simplifies classification and
+    // exporting the DFA to DOT/CNF later.
+    std::cout << "[4/6] Constructing DFA from PTA and ensuring total transitions..." << std::endl;
+    DFA dfa = DFA::from_pta(pta);
+    const std::size_t states_before = dfa.states().size();
 
-        std::cout << "      DFA states: " << states_before << std::endl;
+    std::cout << "      DFA states: " << states_before << std::endl;
 
-        std::cout << "[5/6] Minimizing DFA..." << std::endl;
+    // Step 6: Minimize the DFA (Hopcroft-style partition refinement).
+    // Minimization merges equivalent states, producing a smaller DFA that
+    // recognizes the same language; timings are recorded for diagnostics.
+    std::cout << "[5/6] Minimizing DFA..." << std::endl;
         const auto minimization_start = std::chrono::steady_clock::now();
         DFA minimized = dfa.minimize();
         const auto minimization_end = std::chrono::steady_clock::now();
@@ -305,7 +354,10 @@ int main(int argc, char* argv[]) {
             }
         }
 
-        std::cout << "[6/6] Evaluating DFA on test set..." << std::endl;
+    // Step 7: Evaluate the resulting DFA on the test partition and any
+    // additional holdout datasets. Evaluation computes accuracy and error
+    // rates and annotates the metrics with state counts and minimization time.
+    std::cout << "[6/6] Evaluating DFA on test set..." << std::endl;
         std::vector<EvaluationResult> evaluation_results;
 
         if (!local_test_sequences.empty()) {

@@ -57,6 +57,10 @@ std::vector<std::string> parse_delimited_line(const std::string& line,
     return result;
 }
 
+// parse_delimited_line supports RFC-style CSV quoting: double quotes are
+// escaped by doubling them, and delimiters inside quoted regions are ignored.
+// This helper returns the list of tokens for a single input line.
+
 std::unordered_map<std::string, std::size_t> header_index(
     const std::vector<std::string>& header) {
     std::unordered_map<std::string, std::size_t> index;
@@ -97,6 +101,8 @@ std::vector<LabeledSequence> Parser::load_malware_csv(const std::string& path) {
         return {};
     }
 
+    // Parse header line (CSV) into column tokens. This supports RFC-style
+    // quoting so fields containing commas will be handled correctly.
     auto header = parse_delimited_line(line);
     auto index = header_index(header);
 
@@ -148,6 +154,7 @@ std::vector<LabeledSequence> Parser::load_malware_csv(const std::string& path) {
             }
         }
 
+        // Only keep sequences that had at least one symbol token extracted.
         if (!sample.symbols.empty()) {
             samples.push_back(std::move(sample));
         }
@@ -176,6 +183,8 @@ std::vector<LabeledSequence> Parser::load_iot_csv(const std::string& path) {
         return {};
     }
 
+    // Detect delimiter: some datasets use '|' while others use ','. We
+    // inspect the header line to choose an appropriate separator for parsing.
     char delimiter = line.find('|') != std::string::npos ? '|' : ',';
     auto header = parse_delimited_line(line, delimiter);
     auto index = header_index(header);
@@ -207,7 +216,9 @@ std::vector<LabeledSequence> Parser::load_iot_csv(const std::string& path) {
             continue;
         }
 
-        auto tokens = parse_delimited_line(line, delimiter);
+    // Tokenize the row using the detected delimiter. Supports quoted fields
+    // so embedded delimiters or quotes are handled safely.
+    auto tokens = parse_delimited_line(line, delimiter);
         if (tokens.size() <= label_it->second) {
             // malformed row; skip
             continue;
@@ -233,6 +244,10 @@ std::vector<LabeledSequence> Parser::load_iot_csv(const std::string& path) {
         }
         sample.label = is_true_label(tokens[label_it->second]);
 
+        // Helper to map a dataset column into a prefixed symbol token used by
+        // the PTA/DFA pipeline. We prefix the raw column value (e.g. 'tcp')
+        // with a short namespace like 'proto=' so that different features don't
+        // collide in the alphabet.
         auto add_symbol = [&](std::size_t column, const std::string& prefix) {
             if (column < tokens.size()) {
                 const auto& value = tokens[column];
@@ -252,6 +267,10 @@ std::vector<LabeledSequence> Parser::load_iot_csv(const std::string& path) {
         }
 
         if (sample.symbols.empty()) {
+            // If the row had no usable feature columns, insert a sentinel token
+            // so the sequence is not empty; this prevents dropping the sample in
+            // later stages and makes it explicit that the sample had no
+            // extractable features.
             sample.symbols.push_back("symbol=unknown");
         }
 
