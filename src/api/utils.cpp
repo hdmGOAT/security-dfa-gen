@@ -3,6 +3,7 @@
 
 #include <fstream>
 #include <algorithm>
+#include <cctype>
 
 using namespace std;
 
@@ -49,7 +50,17 @@ bool load_grammar_for_derivation(const string& path, Grammar& g) {
         if (arrow == string::npos) continue;
         string lhs = trim(line.substr(0, arrow));
         string rhs = trim(line.substr(arrow + 2));
-        if (lhs.size() > 0 && lhs[0] == 'T' && lhs.find(" ") == string::npos) {
+        bool is_terminal_label = false;
+        if (lhs.size() >= 2 && lhs[0] == 'T' && lhs.find(" ") == string::npos) {
+            is_terminal_label = true;
+            for (size_t i = 1; i < lhs.size(); ++i) {
+                if (!std::isdigit(static_cast<unsigned char>(lhs[i]))) {
+                    is_terminal_label = false;
+                    break;
+                }
+            }
+        }
+        if (is_terminal_label) {
             g.terminals[lhs] = rhs;
         } else {
             stringstream ss(rhs);

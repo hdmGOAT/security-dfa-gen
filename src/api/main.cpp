@@ -7,11 +7,285 @@
 #include <regex>
 #include <map>
 #include <deque>
+#include <set>
 
 #include "core.hpp"
 #include "utils.hpp"
 
 using namespace automata_security;
+
+static std::vector<std::string> build_derivation_steps(const Grammar& g, const std::vector<std::string>& seq) {
+    std::vector<std::string> derivation;
+    derivation.push_back("S");
+
+    std::string processed_prefix;
+    std::string current_nt = "S";
+
+    auto emit_rhs = [&](const std::vector<std::string>& prod, bool translate_terminals) {
+        std::string rhs;
+        for (size_t i = 0; i < prod.size(); ++i) {
+            if (i > 0) rhs += " ";
+            const auto& token = prod[i];
+            if (translate_terminals && !token.empty() && token[0] == 'T' && g.terminals.count(token)) {
+                rhs += g.terminals.at(token);
+            } else {
+                rhs += token;
+            }
+        }
+        std::string line = processed_prefix + rhs;
+        if (derivation.back() != line) {
+            derivation.push_back(line);
+        }
+    };
+
+    auto append_production_steps = [&](const std::vector<std::string>& prod) {
+        bool needs_raw_step = !prod.empty() && !prod[0].empty() && prod[0][0] == 'T' && g.terminals.count(prod[0]);
+        if (needs_raw_step) emit_rhs(prod, false);
+        emit_rhs(prod, true);
+    };
+
+    auto advance_without_consuming = [&](bool allow_all_epsilon) {
+        bool expanded = false;
+        std::set<std::string> seen;
+        while (!current_nt.empty()) {
+            if (seen.count(current_nt)) break;
+            seen.insert(current_nt);
+
+            auto it = g.productions.find(current_nt);
+            if (it == g.productions.end()) break;
+
+            bool progressed = false;
+            for (const auto& prod : it->second) {
+                if (prod.empty()) continue;
+
+                bool unit_nt = (prod.size() == 1 && g.productions.count(prod[0]));
+                if (unit_nt) {
+                    append_production_steps(prod);
+                    current_nt = prod[0];
+                    progressed = expanded = true;
+                    break;
+                }
+
+                size_t idx = 0;
+                while (idx < prod.size() && prod[idx] == "ε") idx++;
+
+                if (idx < prod.size() && g.productions.count(prod[idx])) {
+                    append_production_steps(prod);
+                    current_nt = prod[idx];
+                    progressed = expanded = true;
+                    break;
+                }
+
+                if (allow_all_epsilon) {
+                    bool all_eps = true;
+                    for (const auto& token : prod) {
+                        if (token != "ε") {
+                            all_eps = false;
+                            break;
+                        }
+                    }
+                    if (all_eps) {
+                        append_production_steps(prod);
+                        progressed = expanded = true;
+                        current_nt.clear();
+                        break;
+                    }
+                }
+            }
+
+            if (!progressed) break;
+        }
+        return expanded;
+    };
+
+    advance_without_consuming(false);
+
+    for (size_t seq_idx = 0; seq_idx < seq.size(); ++seq_idx) {
+    const auto& sym = seq[seq_idx];
+    bool is_last = (seq_idx == seq.size() - 1);
+
+        advance_without_consuming(false);
+
+        auto prod_it = g.productions.find(current_nt);
+        if (prod_it == g.productions.end()) break;
+
+        struct Candidate {
+            const std::vector<std::string>* prod;
+            std::string next_nt;
+        };
+
+        std::vector<Candidate> candidates;
+        for (const auto& prod : prod_it->second) {
+            if (prod.empty()) continue;
+
+            size_t idx = 0;
+            while (idx < prod.size() && prod[idx] == "ε") idx++;
+            if (idx >= prod.size()) continue;
+
+            const auto& token = prod[idx];
+            bool match = false;
+            std::string terminal_value;
+
+            if (!token.empty() && token[0] == 'T' && g.terminals.count(token)) {
+                terminal_value = g.terminals.at(token);
+                match = (terminal_value == sym);
+            } else if (!g.productions.count(token)) {
+                terminal_value = token;
+                match = (terminal_value == sym);
+            } else {
+                // First meaningful token is a non-terminal; handle in epsilon advance stage.
+                continue;
+            }
+
+            if (!match) continue;
+
+            std::string next_nt;
+            for (size_t j = idx + 1; j < prod.size(); ++j) {
+                if (prod[j] == "ε") continue;
+                if (g.productions.count(prod[j])) {
+                    next_nt = prod[j];
+                    break;
+                }
+            }
+
+            candidates.push_back({&prod, next_nt});
+        }
+
+        const std::vector<std::string>* selected_prod = nullptr;
+        std::string selected_next_nt;
+        for (const auto& cand : candidates) {
+            if (is_last) {
+                if (cand.next_nt.empty()) {
+                    selected_prod = cand.prod;
+                    selected_next_nt = cand.next_nt;
+                    break;
+                }
+            } else {
+                if (!cand.next_nt.empty()) {
+                    selected_prod = cand.prod;
+                    selected_next_nt = cand.next_nt;
+                    break;
+                }
+            }
+        }
+
+        if (!selected_prod && !candidates.empty()) {
+            selected_prod = candidates[0].prod;
+            selected_next_nt = candidates[0].next_nt;
+        }
+
+        if (!selected_prod) break;
+
+        const auto& prod = *selected_prod;
+        append_production_steps(prod);
+
+        processed_prefix += sym + " ";
+        current_nt = selected_next_nt;
+        advance_without_consuming(false);
+    }
+
+    advance_without_consuming(true);
+
+    return derivation;
+}
+
+static std::vector<std::string> build_pda_grammar_rules(const PDA& pda, const std::string& source_label) {
+    std::vector<std::string> rules;
+    rules.push_back("# PDA grammar (control-state CFG) derived from: " + source_label);
+    std::string start_symbol;
+    if (!pda.states.empty() && pda.start < pda.states.size()) {
+        start_symbol = pda.states[pda.start].name;
+        rules.push_back("Start state: " + start_symbol);
+    }
+
+    std::vector<std::string> accepting;
+    for (const auto& st : pda.states) {
+        if (st.accepting) accepting.push_back(st.name);
+    }
+    if (!accepting.empty()) {
+        std::string line = "Accepting states: ";
+        for (size_t i = 0; i < accepting.size(); ++i) {
+            if (i > 0) line += ", ";
+            line += accepting[i];
+        }
+        rules.push_back(line);
+    }
+
+    auto fmt_symbol = [](const std::string& sym) {
+        if (sym.empty() || sym == "ε") return std::string("ε");
+        return sym;
+    };
+
+    std::map<std::string, std::set<std::string>> productions;
+    auto add_prod = [&productions](const std::string& lhs, const std::string& rhs) {
+        if (lhs.empty() || rhs.empty()) return;
+        productions[lhs].insert(rhs);
+    };
+
+    if (!start_symbol.empty()) {
+        add_prod("S", start_symbol);
+    }
+
+    for (const auto& st : pda.states) {
+        if (st.transitions.empty() && st.accepting) {
+            add_prod(st.name, "ε");
+        }
+        for (const auto& trans : st.transitions) {
+            std::string symbol = fmt_symbol(trans.input_symbol);
+            std::string rhs = symbol;
+            if (trans.next_state < pda.states.size()) {
+                const auto& next = pda.states[trans.next_state];
+                if (symbol == "ε") {
+                    rhs = "ε " + next.name;
+                } else {
+                    rhs = symbol + " " + next.name;
+                }
+                add_prod(st.name, rhs);
+                if (next.accepting) {
+                    add_prod(st.name, symbol);
+                }
+            } else {
+                add_prod(st.name, symbol);
+            }
+        }
+    }
+
+    auto emit_line = [&rules](const std::string& lhs, const std::set<std::string>& rhs_set) {
+        if (rhs_set.empty()) return;
+        std::string line = "  " + lhs + " -> ";
+        bool first = true;
+        for (const auto& rhs : rhs_set) {
+            if (!first) line += " | ";
+            first = false;
+            line += rhs;
+        }
+        rules.push_back(line);
+    };
+
+    auto s_it = productions.find("S");
+    if (s_it != productions.end()) {
+        emit_line("S", s_it->second);
+    }
+
+    for (const auto& st : pda.states) {
+        auto it = productions.find(st.name);
+        if (it == productions.end() || it->second.empty()) continue;
+        emit_line(st.name, it->second);
+    }
+
+    return rules;
+}
+
+static void persist_rules_if_requested(const std::string& path, const std::vector<std::string>& lines) {
+    if (path.empty()) return;
+    std::ofstream out(path);
+    if (!out.is_open()) {
+        print_error("Failed to write grammar file: " + path);
+    }
+    for (const auto& line : lines) {
+        out << line << "\n";
+    }
+}
 
 // The JSON helpers, grammar loader and DOT/PDA parsers were moved to `utils.cpp`.
 // They are declared in `utils.hpp` and implemented in `utils.cpp` to keep
@@ -300,6 +574,44 @@ int main(int argc, char** argv) {
         std::cout << "] }" << std::endl;
 
     }
+    // Mode: grammar (DFA CNF text dump)
+    else if (mode == "grammar") {
+        std::ifstream in(grammar_path);
+        if (!in.is_open()) {
+            print_error("Failed to open grammar file: " + grammar_path);
+        }
+
+        std::vector<std::string> lines;
+        std::string line;
+        while (std::getline(in, line)) {
+            lines.push_back(line);
+        }
+
+        std::cout << "{ \"rules\": [";
+        for (size_t i = 0; i < lines.size(); ++i) {
+            if (i > 0) std::cout << ", ";
+            std::cout << "\"" << json_escape(lines[i]) << "\"";
+        }
+        std::cout << "] }" << std::endl;
+    }
+    // Mode: pda_grammar – emit persisted PDA grammar rules
+    else if (mode == "pda_grammar") {
+        PDA pda;
+        std::string err;
+        if (!load_dot_pda(dot_path, pda, err)) {
+            print_error("Failed to load PDA from DOT: " + err);
+        }
+
+        auto rules = build_pda_grammar_rules(pda, dot_path);
+        persist_rules_if_requested(grammar_path, rules);
+
+        std::cout << "{ \"rules\": [";
+        for (size_t i = 0; i < rules.size(); ++i) {
+            if (i > 0) std::cout << ", ";
+            std::cout << "\"" << json_escape(rules[i]) << "\"";
+        }
+        std::cout << "] }" << std::endl;
+    }
     // Mode: derivation
     // Given a CNF regular grammar, produce a simple left-to-right derivation
     // trace for a comma-separated input sequence. The algorithm picks matching
@@ -318,128 +630,41 @@ int main(int argc, char** argv) {
             seq.push_back(trim(item));
         }
 
-        std::vector<std::string> derivation;
-        derivation.push_back("S");
-        
-        std::string current_sentential_form = "S";
-        std::string processed_prefix = "";
-        std::string current_nt = "S";
+        auto derivation = build_derivation_steps(g, seq);
 
-        // Simple linear derivation for Regular Grammar
-        for (size_t seq_idx = 0; seq_idx < seq.size(); ++seq_idx) {
-            const auto& sym = seq[seq_idx];
-            bool is_last = (seq_idx == seq.size() - 1);
-            
-            // Find production from current_nt that matches sym
-            bool found = false;
-            if (g.productions.find(current_nt) == g.productions.end()) break;
-
-            // We need to pick the best production.
-            // Candidates:
-            struct Candidate {
-                std::vector<std::string> prod;
-                std::string next_nt;
-            };
-            std::vector<Candidate> candidates;
-
-            for (const auto& prod : g.productions[current_nt]) {
-                if (prod.empty()) continue;
-                
-                // Check match
-                std::string first = prod[0];
-                bool match = false;
-                if (first[0] == 'T' && g.terminals.count(first)) {
-                    if (g.terminals[first] == sym) match = true;
-                } else if (first == sym) {
-                    match = true;
-                }
-
-                if (match) {
-                    std::string next_nt;
-                    for (size_t i = 0; i < prod.size(); ++i) {
-                        if (g.productions.count(prod[i])) next_nt = prod[i];
-                    }
-                    candidates.push_back({prod, next_nt});
-                }
-            }
-
-            // Selection logic
-            const std::vector<std::string>* selected_prod = nullptr;
-            std::string selected_next_nt;
-            // Selection logic: heuristically pick a production among candidates.
-            // - If we're at the last input symbol, prefer a terminating
-            //   production (no next nonterminal) so the derivation can finish.
-            // - Otherwise prefer productions that transition to another
-            //   nonterminal so subsequent symbols can be matched.
-            for (const auto& cand : candidates) {
-                if (is_last) {
-                    if (cand.next_nt.empty()) {
-                        selected_prod = &cand.prod;
-                        selected_next_nt = cand.next_nt;
-                        break; 
-                    }
-                } else {
-                    if (!cand.next_nt.empty()) {
-                        selected_prod = &cand.prod;
-                        selected_next_nt = cand.next_nt;
-                        break;
-                    }
-                }
-            }
-            
-            // Fallback: if no preferred found, just take the first one (or any)
-            // Fallback: if no heuristic selection succeeded, fall back to the
-            // first candidate. This keeps the derivation monotonic rather than
-            // failing fast and yields a plausible trace for display.
-            if (!selected_prod && !candidates.empty()) {
-                selected_prod = &candidates[0].prod;
-                selected_next_nt = candidates[0].next_nt;
-            }
-
-            if (selected_prod) {
-                const auto& prod = *selected_prod;
-                // Found it.
-                // 1. Replace NT with RHS
-                std::string rhs_str;
-                std::string next_nt = selected_next_nt;
-                
-                // If we used a T-rule:
-                std::string first = prod[0];
-                if (first[0] == 'T') {
-                    // Intermediate step with T
-                    std::string step1_rhs;
-                    for (size_t i = 0; i < prod.size(); ++i) {
-                        if (i > 0) step1_rhs += " ";
-                        step1_rhs += prod[i];
-                    }
-                    derivation.push_back(processed_prefix + step1_rhs);
-                }
-
-                // Final step for this symbol
-                std::string step2_rhs;
-                for (size_t i = 0; i < prod.size(); ++i) {
-                    if (i > 0) step2_rhs += " ";
-                    if (prod[i][0] == 'T' && g.terminals.count(prod[i])) {
-                        step2_rhs += g.terminals[prod[i]];
-                    } else {
-                        step2_rhs += prod[i];
-                    }
-                }
-                
-                std::string full_step = processed_prefix + step2_rhs;
-                // Avoid duplicate if T-rule wasn't used or same
-                if (derivation.back() != full_step) {
-                    derivation.push_back(full_step);
-                }
-
-                processed_prefix += sym + " ";
-                current_nt = next_nt;
-                found = true;
-            }
-            
-            if (!found) break;
-            if (current_nt.empty() && !is_last) break; // Terminated early?
+        std::cout << "{ \"steps\": [";
+        for (size_t i = 0; i < derivation.size(); ++i) {
+            if (i > 0) std::cout << ", ";
+            std::cout << "\"" << json_escape(derivation[i]) << "\"";
         }
+        std::cout << "] }" << std::endl;
+
+    }
+    // Mode: pda_derivation – produce derivation trace from persisted PDA grammar
+    else if (mode == "pda_derivation") {
+        Grammar g;
+        bool loaded = load_grammar_for_derivation(grammar_path, g);
+        if (!loaded && !dot_path.empty()) {
+            PDA pda;
+            std::string err;
+            if (!load_dot_pda(dot_path, pda, err)) {
+                print_error("Failed to load PDA for derivation: " + err);
+            }
+            auto rules = build_pda_grammar_rules(pda, dot_path);
+            persist_rules_if_requested(grammar_path, rules);
+            loaded = load_grammar_for_derivation(grammar_path, g);
+        }
+
+        if (!loaded) {
+            print_error("Failed to load PDA grammar for derivation");
+        }
+
+        std::vector<std::string> seq;
+        std::stringstream iss(input);
+        std::string tok;
+        while (iss >> tok) seq.push_back(trim(tok));
+
+        auto derivation = build_derivation_steps(g, seq);
 
         std::cout << "{ \"steps\": [";
         for (size_t i = 0; i < derivation.size(); ++i) {
