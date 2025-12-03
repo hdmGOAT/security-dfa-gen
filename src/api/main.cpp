@@ -14,18 +14,24 @@
 
 using namespace automata_security;
 
+// build_derivation_steps:
+// This function figures out the step-by-step "story" of how the grammar produces a specific sequence of inputs.
+// It starts with the start symbol 'S' and tries to find rules that match the input symbols one by one.
 static std::vector<std::string> build_derivation_steps(const Grammar& g, const std::vector<std::string>& seq) {
     std::vector<std::string> derivation;
-    derivation.push_back("S");
+    derivation.push_back("S"); // Start with the initial symbol.
 
-    std::string processed_prefix;
-    std::string current_nt = "S";
+    std::string processed_prefix; // The part of the input we have already matched.
+    std::string current_nt = "S"; // The current non-terminal symbol we are trying to expand.
 
+    // Helper: Adds a line to the derivation history.
+    // It combines the already matched part (processed_prefix) with the current rule's right-hand side (rhs).
     auto emit_rhs = [&](const std::vector<std::string>& prod, bool translate_terminals) {
         std::string rhs;
         for (size_t i = 0; i < prod.size(); ++i) {
             if (i > 0) rhs += " ";
             const auto& token = prod[i];
+            // If it's a terminal placeholder (like T_0), look up its real value (like "tcp").
             if (translate_terminals && !token.empty() && token[0] == 'T' && g.terminals.count(token)) {
                 rhs += g.terminals.at(token);
             } else {
@@ -33,22 +39,28 @@ static std::vector<std::string> build_derivation_steps(const Grammar& g, const s
             }
         }
         std::string line = processed_prefix + rhs;
+        // Only add if it's different from the last line (avoid duplicates).
         if (derivation.back() != line) {
             derivation.push_back(line);
         }
     };
 
+    // Helper: Records the application of a production rule.
+    // Sometimes we show the raw rule (with T_0) first, then the translated one (with "tcp").
     auto append_production_steps = [&](const std::vector<std::string>& prod) {
         bool needs_raw_step = !prod.empty() && !prod[0].empty() && prod[0][0] == 'T' && g.terminals.count(prod[0]);
         if (needs_raw_step) emit_rhs(prod, false);
         emit_rhs(prod, true);
     };
 
+    // Helper: Tries to move forward in the grammar without consuming any input.
+    // This handles "unit productions" (A -> B) or "epsilon productions" (A -> ε).
     auto advance_without_consuming = [&](bool allow_all_epsilon) {
         bool expanded = false;
         std::set<std::string> seen;
+        // Keep expanding as long as we have a current non-terminal.
         while (!current_nt.empty()) {
-            if (seen.count(current_nt)) break;
+            if (seen.count(current_nt)) break; // Avoid infinite loops.
             seen.insert(current_nt);
 
             auto it = g.productions.find(current_nt);
@@ -58,17 +70,20 @@ static std::vector<std::string> build_derivation_steps(const Grammar& g, const s
             for (const auto& prod : it->second) {
                 if (prod.empty()) continue;
 
+                // Case 1: Unit production (e.g., A -> B).
                 bool unit_nt = (prod.size() == 1 && g.productions.count(prod[0]));
                 if (unit_nt) {
                     append_production_steps(prod);
-                    current_nt = prod[0];
+                    current_nt = prod[0]; // Move to the next non-terminal.
                     progressed = expanded = true;
                     break;
                 }
 
+                // Skip over epsilons (ε).
                 size_t idx = 0;
                 while (idx < prod.size() && prod[idx] == "ε") idx++;
 
+                // Case 2: Production starts with ε then a non-terminal (e.g., A -> ε B).
                 if (idx < prod.size() && g.productions.count(prod[idx])) {
                     append_production_steps(prod);
                     current_nt = prod[idx];
@@ -76,6 +91,8 @@ static std::vector<std::string> build_derivation_steps(const Grammar& g, const s
                     break;
                 }
 
+                // Case 3: All epsilon (e.g., A -> ε).
+                // Only allowed if we are explicitly looking for it (usually at the end).
                 if (allow_all_epsilon) {
                     bool all_eps = true;
                     for (const auto& token : prod) {
@@ -87,7 +104,7 @@ static std::vector<std::string> build_derivation_steps(const Grammar& g, const s
                     if (all_eps) {
                         append_production_steps(prod);
                         progressed = expanded = true;
-                        current_nt.clear();
+                        current_nt.clear(); // Nothing left to expand.
                         break;
                     }
                 }
@@ -98,12 +115,15 @@ static std::vector<std::string> build_derivation_steps(const Grammar& g, const s
         return expanded;
     };
 
+    // Initial expansion (handle start rules like S -> A).
     advance_without_consuming(false);
 
+    // Loop through each symbol in the input sequence.
     for (size_t seq_idx = 0; seq_idx < seq.size(); ++seq_idx) {
-    const auto& sym = seq[seq_idx];
-    bool is_last = (seq_idx == seq.size() - 1);
+        const auto& sym = seq[seq_idx];
+        bool is_last = (seq_idx == seq.size() - 1);
 
+        // Try to advance non-consuming rules again before processing the symbol.
         advance_without_consuming(false);
 
         auto prod_it = g.productions.find(current_nt);
@@ -114,6 +134,7 @@ static std::vector<std::string> build_derivation_steps(const Grammar& g, const s
             std::string next_nt;
         };
 
+        // Find all production rules that could match the current symbol.
         std::vector<Candidate> candidates;
         for (const auto& prod : prod_it->second) {
             if (prod.empty()) continue;
@@ -126,6 +147,7 @@ static std::vector<std::string> build_derivation_steps(const Grammar& g, const s
             bool match = false;
             std::string terminal_value;
 
+            // Check if the token matches the input symbol.
             if (!token.empty() && token[0] == 'T' && g.terminals.count(token)) {
                 terminal_value = g.terminals.at(token);
                 match = (terminal_value == sym);
@@ -133,12 +155,13 @@ static std::vector<std::string> build_derivation_steps(const Grammar& g, const s
                 terminal_value = token;
                 match = (terminal_value == sym);
             } else {
-                // First meaningful token is a non-terminal; handle in epsilon advance stage.
+                // It's a non-terminal, so this rule doesn't start with a terminal. Skip.
                 continue;
             }
 
             if (!match) continue;
 
+            // Find the next non-terminal in this rule to continue the chain.
             std::string next_nt;
             for (size_t j = idx + 1; j < prod.size(); ++j) {
                 if (prod[j] == "ε") continue;
@@ -151,9 +174,12 @@ static std::vector<std::string> build_derivation_steps(const Grammar& g, const s
             candidates.push_back({&prod, next_nt});
         }
 
+        // Select the best candidate rule.
         const std::vector<std::string>* selected_prod = nullptr;
         std::string selected_next_nt;
         for (const auto& cand : candidates) {
+            // Heuristic: If it's the last symbol, prefer rules that finish (no next_nt).
+            // Otherwise, prefer rules that continue (have a next_nt).
             if (is_last) {
                 if (cand.next_nt.empty()) {
                     selected_prod = cand.prod;
@@ -169,35 +195,45 @@ static std::vector<std::string> build_derivation_steps(const Grammar& g, const s
             }
         }
 
+        // Fallback: just pick the first one if no heuristic match.
         if (!selected_prod && !candidates.empty()) {
             selected_prod = candidates[0].prod;
             selected_next_nt = candidates[0].next_nt;
         }
 
-        if (!selected_prod) break;
+        if (!selected_prod) break; // No matching rule found.
 
+        // Apply the selected rule.
         const auto& prod = *selected_prod;
         append_production_steps(prod);
 
+        // Update state for the next iteration.
         processed_prefix += sym + " ";
         current_nt = selected_next_nt;
         advance_without_consuming(false);
     }
 
+    // Final cleanup: expand any remaining epsilon rules.
     advance_without_consuming(true);
 
     return derivation;
 }
 
+// build_pda_grammar_rules:
+// This function takes a PDA (Pushdown Automaton) and converts its logic into a set of grammar rules.
+// This is useful for visualizing the PDA's behavior as if it were a simple grammar.
 static std::vector<std::string> build_pda_grammar_rules(const PDA& pda, const std::string& source_label) {
     std::vector<std::string> rules;
     rules.push_back("# PDA grammar (control-state CFG) derived from: " + source_label);
+    
+    // Identify the start state.
     std::string start_symbol;
     if (!pda.states.empty() && pda.start < pda.states.size()) {
         start_symbol = pda.states[pda.start].name;
         rules.push_back("Start state: " + start_symbol);
     }
 
+    // Identify all accepting (valid final) states.
     std::vector<std::string> accepting;
     for (const auto& st : pda.states) {
         if (st.accepting) accepting.push_back(st.name);
@@ -211,25 +247,31 @@ static std::vector<std::string> build_pda_grammar_rules(const PDA& pda, const st
         rules.push_back(line);
     }
 
+    // Helper: Formats a symbol for display (handles empty symbols as epsilon).
     auto fmt_symbol = [](const std::string& sym) {
         if (sym.empty() || sym == "ε") return std::string("ε");
         return sym;
     };
 
+    // Store productions (rules) in a map to group them by the left-hand side (LHS).
     std::map<std::string, std::set<std::string>> productions;
     auto add_prod = [&productions](const std::string& lhs, const std::string& rhs) {
         if (lhs.empty() || rhs.empty()) return;
         productions[lhs].insert(rhs);
     };
 
+    // Add the initial rule: S -> StartState.
     if (!start_symbol.empty()) {
         add_prod("S", start_symbol);
     }
 
+    // Iterate through all states in the PDA to build rules.
     for (const auto& st : pda.states) {
+        // If a state is accepting and has no transitions, it can transition to epsilon (finish).
         if (st.transitions.empty() && st.accepting) {
             add_prod(st.name, "ε");
         }
+        // For each transition, create a rule: CurrentState -> InputSymbol NextState.
         for (const auto& trans : st.transitions) {
             std::string symbol = fmt_symbol(trans.input_symbol);
             std::string rhs = symbol;
@@ -241,6 +283,7 @@ static std::vector<std::string> build_pda_grammar_rules(const PDA& pda, const st
                     rhs = symbol + " " + next.name;
                 }
                 add_prod(st.name, rhs);
+                // If the next state is accepting, we can also just consume the symbol and finish.
                 if (next.accepting) {
                     add_prod(st.name, symbol);
                 }
@@ -250,6 +293,7 @@ static std::vector<std::string> build_pda_grammar_rules(const PDA& pda, const st
         }
     }
 
+    // Helper: Formats a rule as "LHS -> RHS1 | RHS2 | ..."
     auto emit_line = [&rules](const std::string& lhs, const std::set<std::string>& rhs_set) {
         if (rhs_set.empty()) return;
         std::string line = "  " + lhs + " -> ";
@@ -262,15 +306,18 @@ static std::vector<std::string> build_pda_grammar_rules(const PDA& pda, const st
         rules.push_back(line);
     };
 
+    // Output the start rule first.
     auto s_it = productions.find("S");
     if (s_it != productions.end()) {
         emit_line("S", s_it->second);
     }
 
+    // Output the rest of the rules.
     for (const auto& st : pda.states) {
         auto it = productions.find(st.name);
-        if (it == productions.end() || it->second.empty()) continue;
-        emit_line(st.name, it->second);
+        if (it != productions.end()) {
+            emit_line(st.name, it->second);
+        }
     }
 
     return rules;
@@ -321,109 +368,130 @@ struct SimulationState {
     std::vector<PDAStep> trace;
 };
 
-// simulate_pda: breadth-first exploration of PDA control states and stacks
-// Returns the first accepting trace found, or the most-progressing trace when
-// no accepting run exists (helps the UI show where execution failed).
-// simulate_pda performs a breadth-first search over PDA configurations.
-// We explore possible transitions non-deterministically and return the first
-// accepting trace found. If no accepting run exists, we return the "best"
-// trace (the one that consumed the most input) to help UI debugging.
+// simulate_pda: This function runs the Pushdown Automaton (PDA) simulation.
+// It explores all possible paths the machine can take (breadth-first search) to see if the input is valid.
+// If the input is valid, it returns the successful path (trace).
+// If not, it returns the path that got the furthest, to help show where it failed.
 PDATraceResult simulate_pda(const PDA& pda, const std::vector<std::string>& input) {
-    // BFS queue of configurations: (state index, next input index, stack, trace so far)
+    // We use a queue to manage the different paths we are exploring.
+    // Each item in the queue represents a "state" of the simulation:
+    // - Which control state we are in (e.g., "Start", "TCP_Established")
+    // - How much of the input we have processed so far
+    // - The current contents of the stack (memory)
+    // - The history of steps taken to get here
     std::deque<SimulationState> queue;
+    
+    // Start the simulation at the PDA's start state, with 0 input processed, an empty stack, and no history.
     queue.push_back({pda.start, 0, {}, {}});
 
-    size_t max_steps = 50000; // Safety limit to prevent pathological loops
+    size_t max_steps = 50000; // A safety limit to stop the simulation if it runs too long (infinite loop protection).
     size_t steps_count = 0;
 
-    // Track the best (furthest-progressing) partial trace so we can return it
-    // when no accepting run is found; this improves UX by showing where the
-    // PDA got stuck.
+    // We keep track of the "best" attempt so far.
+    // "Best" means the attempt that successfully processed the most input characters.
+    // This is useful for error reporting if the input is rejected.
     size_t best_input_consumed = 0;
     std::vector<PDAStep> best_trace;
 
+    // Keep processing states from the queue until there are none left or we hit the limit.
     while(!queue.empty()) {
-        if (steps_count++ > max_steps) break; // bail out if too many steps
+        if (steps_count++ > max_steps) break; // Stop if we've done too much work.
 
+        // Get the next state to explore from the front of the queue.
         SimulationState current = queue.front();
         queue.pop_front();
 
-        // Update best progress
+        // Check if this path has processed more input than our previous best.
+        // If so, remember it as the new best path.
         if (current.input_idx > best_input_consumed) {
             best_input_consumed = current.input_idx;
             best_trace = current.trace;
         }
 
-        // Accepting condition: consumed all input and in accepting control state
+        // Check if we have successfully finished:
+        // 1. We have processed all the input characters.
+        // 2. The current state is marked as an "accepting" state (valid end state).
         if (current.input_idx == input.size() && pda.states[current.state_idx].accepting) {
+            // Success! Return true and the history of steps.
             return {true, current.trace};
         }
 
+        // Get the details of the current control state we are in.
         const auto& state = pda.states[current.state_idx];
-        // Examine each outgoing transition from the current control state
+        
+        // Look at all the possible moves (transitions) allowed from this state.
         for (const auto& trans : state.transitions) {
-            // Determine if the transition matches the current input symbol
+            // Check if the input matches what this transition requires.
             bool input_match = false;
             bool consumes_input = false;
 
             if (trans.input_symbol == "ε") {
-                // ε-transitions do not consume input
+                // "ε" (epsilon) means this move doesn't require any input (it's automatic).
                 input_match = true;
             } else if (current.input_idx < input.size() && trans.input_symbol == input[current.input_idx]) {
+                // The transition requires a specific symbol, and it matches the next one in our input.
                 input_match = true;
-                consumes_input = true;
+                consumes_input = true; // This move will use up one input character.
             }
 
-            if (!input_match) continue; // skip if input doesn't match
+            if (!input_match) continue; // If input doesn't match, we can't take this path.
 
-            // Check stack/pop condition: either pop ε or top matches the required symbol
+            // Check if the stack matches what this transition requires.
+            // Some moves require popping a specific item from the top of the stack.
             bool stack_match = false;
             if (trans.pop_symbol == "ε") {
+                // "ε" means we don't need to pop anything.
                 stack_match = true;
             } else if (!current.stack.empty() && current.stack.back() == trans.pop_symbol) {
+                // The top of the stack matches the required symbol.
                 stack_match = true;
             }
 
-            if (!stack_match) continue; // skip if stack doesn't match
+            if (!stack_match) continue; // If stack doesn't match, we can't take this path.
 
-            // Apply the transition to form a new configuration
+            // If we get here, this transition is valid!
+            // Create a new simulation state representing the result of taking this move.
             SimulationState next = current;
-            next.state_idx = trans.next_state;
-            if (consumes_input) next.input_idx++;
+            next.state_idx = trans.next_state; // Move to the new control state.
+            if (consumes_input) next.input_idx++; // Advance input if we used a character.
 
-            // Pop from stack if required
+            // Perform the stack "POP" operation if required.
             if (trans.pop_symbol != "ε") {
-                next.stack.pop_back();
+                next.stack.pop_back(); // Remove the top item.
             }
 
-            // Push symbols onto stack in reverse order so the first symbol from the
-            // RHS becomes the top of the stack.
+            // Perform the stack "PUSH" operation.
+            // We push symbols in reverse order so the first one ends up on top.
             for (auto it = trans.push_symbols.rbegin(); it != trans.push_symbols.rend(); ++it) {
                 next.stack.push_back(*it);
             }
 
-            // Record the PDA step for tracing/debugging
+            // Record this step in the history trace so we can show the user what happened.
             PDAStep step;
             step.current_state = state.name;
             step.next_state = pda.states[trans.next_state].name;
             step.symbol = consumes_input ? input[current.input_idx] : "ε";
             step.stack_after = next.stack;
 
+            // Label the operation type for the UI (PUSH, POP, or just moving).
             if (!trans.push_symbols.empty()) step.op = "PUSH";
             else if (trans.pop_symbol != "ε") step.op = "POP";
             else step.op = "NO_OP";
 
             next.trace.push_back(step);
 
-            // Enqueue next configuration for exploration
+            // Add this new state to the queue to be explored later.
             queue.push_back(next);
         }
     }
 
-    // No accepting run found: return the best partial trace to help debugging
+    // If we empty the queue without finding a solution, the input is invalid.
+    // Return false, but provide the "best" trace we found to help debug.
     return {false, best_trace};
 }
 
+// main: The entry point of the program.
+// It reads command-line arguments to decide which mode to run.
 int main(int argc, char** argv) {
     std::string mode;
     std::string input;
@@ -431,8 +499,10 @@ int main(int argc, char** argv) {
     std::string grammar_path = "grammar.txt";
     std::string dot_path = "automaton.dot";
 
+    // Loop through all arguments passed to the program.
     for (int i = 1; i < argc; ++i) {
         std::string a(argv[i]);
+        // Check for flags like --mode, --input, etc. and store their values.
         if (a.rfind("--mode", 0) == 0) {
             if (i + 1 < argc) mode = argv[++i];
         } else if (a.rfind("--input", 0) == 0) {
@@ -444,38 +514,30 @@ int main(int argc, char** argv) {
         } else if (a.rfind("--dot", 0) == 0) {
             if (i + 1 < argc) dot_path = argv[++i];
         } else if (a == "--json") {
-            // No-op, always JSON
+            // No-op, always JSON (we keep this for compatibility).
         }
     }
 
     // Mode: graph
-    // Parse a DOT file line-by-line and assemble JSON arrays for nodes and edges.
-    // The parser looks for the special `__start -> <node>;` line to detect the
-    // start state and uses node attributes (label, doublecircle) to set
-    // descriptive fields for the UI.
+    // This mode reads a DOT file (which describes a graph) and converts it into JSON.
+    // The frontend uses this JSON to draw the graph on the screen.
     if (mode == "graph") {
         std::ifstream in(dot_path);
         if (!in.is_open()) print_error("Failed to open DOT file: " + dot_path);
 
-        // Use simple string matching instead of regex to avoid raw string literal issues
-        // std::regex node_re(R"(\s*(\w+)\s*\[label="([^"]+)"(.*)\];)");
-        
         std::vector<std::string> nodes_json;
         std::vector<std::string> edges_json;
         std::string start_node;
         std::string line;
 
-        // Read DOT file line-by-line and detect special markers, node and edge
-        // declarations. We perform simple string matching rather than full DOT
-        // parsing for robustness and portability.
+        // Read the file line by line.
         while (std::getline(in, line)) {
-            // Trim whitespace from both ends
+            // Clean up whitespace.
             line.erase(0, line.find_first_not_of(" \t"));
             line.erase(line.find_last_not_of(" \t") + 1);
 
-            // Detect start edge: `__start -> sX;` and remember the target id.
+            // Look for the special start marker (e.g., "__start -> s0").
             if (line.find("__start ->") == 0) {
-                // Example: `__start -> s4;`
                 size_t arrow = line.find("->");
                 size_t semi = line.find(";");
                 if (arrow != std::string::npos && semi != std::string::npos) {
@@ -484,31 +546,31 @@ int main(int argc, char** argv) {
                     start_node.erase(start_node.find_last_not_of(" \t") + 1);
                 }
 
-            // Edge lines: `s0 -> s5 [label="..."];` (ignore the __start pseudo-node)
+            // Look for edges (connections between nodes), e.g., "s0 -> s1".
             } else if (line.find("->") != std::string::npos) {
-                if (line.find("__start") == 0) continue; // already handled
+                if (line.find("__start") == 0) continue; // Skip the start marker line itself.
 
                 size_t arrow = line.find("->");
                 size_t bracket = line.find("[");
                 size_t label_pos = line.find("label=\"");
 
-                // We expect an edge line with a bracketed attribute list and a
-                // label attribute; if these are not present we skip the line.
+                // If it looks like a valid edge with a label...
                 if (arrow != std::string::npos && bracket != std::string::npos && label_pos != std::string::npos) {
-                    // Extract source and target node ids
+                    // Extract the source and target node names.
                     std::string src = line.substr(0, arrow);
                     std::string tgt = line.substr(arrow + 2, bracket - (arrow + 2));
 
-                    // Trim whitespace from node ids
+                    // Clean up names.
                     src.erase(0, src.find_first_not_of(" \t"));
                     src.erase(src.find_last_not_of(" \t") + 1);
                     tgt.erase(0, tgt.find_first_not_of(" \t"));
                     tgt.erase(tgt.find_last_not_of(" \t") + 1);
 
-                    // Extract label value inside label="..."
+                    // Extract the label text (what is written on the arrow).
                     size_t label_end = line.find("\"", label_pos + 7);
                     std::string lbl = line.substr(label_pos + 7, label_end - (label_pos + 7));
 
+                    // Format as a JSON object for the edge.
                     std::ostringstream e;
                     e << "{ \"source\": \"" << json_escape(src) << "\", ";
                     e << "\"target\": \"" << json_escape(tgt) << "\", ";
@@ -516,7 +578,7 @@ int main(int argc, char** argv) {
                     edges_json.push_back(e.str());
                 }
 
-            // Node declaration lines: `s0 [label="s0\n+..." ...];`
+            // Look for node definitions, e.g., "s0 [label=...]".
             } else if (line.find("[") != std::string::npos && line.find("label=") != std::string::npos) {
                 if (line.find("__start") == 0) continue;
                 if (line.find("node [") == 0) continue;
@@ -530,14 +592,13 @@ int main(int argc, char** argv) {
                 if (label_pos != std::string::npos) {
                     size_t label_end = line.find("\"", label_pos + 7);
                     std::string label_raw = line.substr(label_pos + 7, label_end - (label_pos + 7));
-                    // Label raw contains the visible label (we take only the first line before \n)
+                    // Take only the first line of the label.
                     std::string label = label_raw.substr(0, label_raw.find("\\n"));
 
-                        // Detect accepting (doublecircle) style. DOT exports use the
-                        // doublecircle shape attribute to indicate accepting states
-                        // in the visualizer, so we detect that text here.
-                        bool is_accepting = line.find("doublecircle") != std::string::npos;
+                    // Check if it's an accepting state (marked by doublecircle).
+                    bool is_accepting = line.find("doublecircle") != std::string::npos;
 
+                    // Format as a JSON object for the node.
                     std::ostringstream n;
                     n << "{ \"id\": \"" << json_escape(id) << "\", ";
                     n << "\"label\": \"" << json_escape(label) << "\", ";
@@ -548,11 +609,10 @@ int main(int argc, char** argv) {
             }
         }
 
-        // Fix start node flag
+        // Ensure the start node is correctly marked in the JSON list.
         if (!start_node.empty()) {
              for (auto& n : nodes_json) {
                  if (n.find("\"id\": \"" + start_node + "\"") != std::string::npos) {
-                     // This is a hacky replace, but sufficient for generated JSON
                      size_t pos = n.find("\"is_start\": false");
                      if (pos != std::string::npos) {
                          n.replace(pos, 17, "\"is_start\": true");
@@ -561,6 +621,7 @@ int main(int argc, char** argv) {
              }
         }
 
+        // Output the final JSON structure containing nodes and edges.
         std::cout << "{ \"nodes\": [";
         for (size_t i = 0; i < nodes_json.size(); ++i) {
             if (i > 0) std::cout << ", ";
@@ -574,7 +635,8 @@ int main(int argc, char** argv) {
         std::cout << "] }" << std::endl;
 
     }
-    // Mode: grammar (DFA CNF text dump)
+    // Mode: grammar
+    // Reads a grammar file and outputs it as a JSON list of rules.
     else if (mode == "grammar") {
         std::ifstream in(grammar_path);
         if (!in.is_open()) {
@@ -594,7 +656,8 @@ int main(int argc, char** argv) {
         }
         std::cout << "] }" << std::endl;
     }
-    // Mode: pda_grammar – emit persisted PDA grammar rules
+    // Mode: pda_grammar
+    // Loads a PDA, converts its logic into grammar rules, and outputs them.
     else if (mode == "pda_grammar") {
         PDA pda;
         std::string err;
@@ -613,16 +676,14 @@ int main(int argc, char** argv) {
         std::cout << "] }" << std::endl;
     }
     // Mode: derivation
-    // Given a CNF regular grammar, produce a simple left-to-right derivation
-    // trace for a comma-separated input sequence. The algorithm picks matching
-    // productions heuristically to produce a plausible derivation for display.
+    // Takes a sequence of inputs and explains how the grammar produces them step-by-step.
     else if (mode == "derivation") {
         Grammar g;
         if (!load_grammar_for_derivation(grammar_path, g)) {
             print_error("Failed to load grammar");
         }
 
-        // Input is comma separated symbols
+        // Parse the comma-separated input string into a list.
         std::vector<std::string> seq;
         std::stringstream ss(input);
         std::string item;
@@ -630,8 +691,10 @@ int main(int argc, char** argv) {
             seq.push_back(trim(item));
         }
 
+        // Calculate the derivation steps.
         auto derivation = build_derivation_steps(g, seq);
 
+        // Output the steps as JSON.
         std::cout << "{ \"steps\": [";
         for (size_t i = 0; i < derivation.size(); ++i) {
             if (i > 0) std::cout << ", ";
@@ -640,7 +703,8 @@ int main(int argc, char** argv) {
         std::cout << "] }" << std::endl;
 
     }
-    // Mode: pda_derivation – produce derivation trace from persisted PDA grammar
+    // Mode: pda_derivation
+    // Similar to derivation, but specifically for the PDA's grammar.
     else if (mode == "pda_derivation") {
         Grammar g;
         bool loaded = load_grammar_for_derivation(grammar_path, g);
@@ -675,9 +739,8 @@ int main(int argc, char** argv) {
 
     }
     // Mode: dfa
-    // Load a DFA from DOT (via load_dot_dfa) and step through comma-separated
-    // symbols starting from the provided state (or the DFA start state if none
-    // supplied). Emit per-symbol steps and final classification (is_malicious).
+    // Simulates a Deterministic Finite Automaton (DFA).
+    // It steps through the input symbols one by one and tracks the state changes.
     else if (mode == "dfa") {
         GrammarDFA gdfa;
         std::string err;
@@ -685,13 +748,10 @@ int main(int argc, char** argv) {
             print_error("Failed to load DFA from DOT: " + err);
         }
 
-    // If no explicit start state was provided via `--state`, start from
-    // the grammar/DFA's canonical start (typically 'S'). The backend UI
-    // can pass a specific state name to resume stepping from an arbitrary
-    // node for interactive debugging.
-    if (state.empty()) state = gdfa.names[gdfa.start];
+        // If no start state is given, use the default one.
+        if (state.empty()) state = gdfa.names[gdfa.start];
         
-        // Input is comma separated symbols
+        // Parse input.
         std::vector<std::string> seq;
         std::stringstream ss(input);
         std::string item;
@@ -699,6 +759,7 @@ int main(int argc, char** argv) {
             seq.push_back(trim(item));
         }
         
+        // Find the starting state index.
         size_t cur_idx = 0;
         if (gdfa.idx.find(state) != gdfa.idx.end()) {
             cur_idx = gdfa.idx[state];
@@ -709,6 +770,7 @@ int main(int argc, char** argv) {
         std::cout << "{ \"steps\": [";
         bool first_step = true;
 
+        // Process each symbol in the sequence.
         for (const auto& sym : seq) {
             if (!first_step) std::cout << ", ";
             first_step = false;
@@ -716,24 +778,23 @@ int main(int argc, char** argv) {
             std::string current_state_name = gdfa.names[cur_idx];
             std::string next_state_name;
 
+            // Check if there is a valid transition for this symbol.
             auto it = gdfa.trans[cur_idx].find(sym);
             if (it != gdfa.trans[cur_idx].end()) {
-                cur_idx = it->second;
+                cur_idx = it->second; // Move to the next state.
                 next_state_name = gdfa.names[cur_idx];
             } else {
-                // No transition found for this symbol. Historically the CLI
-                // simply kept the DFA in the same visual state which allows the
-                // UI to show the symbol that couldn't be consumed. A more
-                // strict behavior would move to a sink or report an error,
-                // but keeping the current state preserves prior visual traces.
+                // No transition found: stay in the same state (visualizer behavior).
                 next_state_name = current_state_name; 
             }
 
+            // Output the step details.
             std::cout << "{ \"current_state\": \"" << json_escape(current_state_name) << "\", ";
             std::cout << "\"symbol\": \"" << json_escape(sym) << "\", ";
             std::cout << "\"next_state\": \"" << json_escape(next_state_name) << "\" }";
         }
 
+        // Check if the final state is "accepting" (malicious).
         bool is_malicious = gdfa.accepting[cur_idx];
         
         std::cout << "], \"final_state\": \"" << json_escape(gdfa.names[cur_idx]) << "\", ";
@@ -742,24 +803,26 @@ int main(int argc, char** argv) {
 
     }
     // Mode: pda
-    // Load a PDA and simulate it using `simulate_pda`. The output is a JSON
-    // sequence of stack operations and a final `valid` boolean.
+    // Simulates a Pushdown Automaton (PDA).
+    // It uses the simulate_pda function to check if the input is valid.
     else if (mode == "pda") {
-        // Load PDA from DOT and simulate using structured PDA transitions
+        // Load the PDA definition.
         PDA pda;
         std::string err;
         if (!load_dot_pda(dot_path, pda, err)) {
             print_error("Failed to load PDA from DOT: " + err);
         }
 
-        // Input is space separated symbols (history). Use stringstream >> to skip extra spaces.
+        // Parse input (space-separated).
         std::vector<std::string> seq;
         std::stringstream iss(input);
         std::string tok;
         while (iss >> tok) seq.push_back(tok);
 
+        // Run the simulation.
         PDATraceResult res = simulate_pda(pda, seq);
 
+        // Output the result (valid/invalid) and the trace of steps.
         std::cout << "{ \"valid\": " << (res.ok ? "true" : "false") << ", \"steps\": [";
         for (size_t i = 0; i < res.steps.size(); ++i) {
             if (i > 0) std::cout << ", ";
