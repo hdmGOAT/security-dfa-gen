@@ -1,0 +1,32 @@
+# Chomsky Normal Form (CNF) grammar generated from DFA
+Terminals: {proto=icmp, proto=tcp, proto=udp, service=dns, service=http, state=OTH, state=REJ, state=RSTO, state=RSTOS0, state=RSTR, state=S0, state=S1, state=S2, state=SF, state=SH}
+  service=ssh
+Nonterminals: {S, A0, A1, A2, A3}
+Start: S
+Productions:
+  T0 -> proto=icmp
+  T1 -> proto=tcp
+  T2 -> proto=udp
+  T3 -> service=dns
+  T4 -> service=http
+  T5 -> state=OTH
+  T6 -> state=REJ
+  T7 -> state=RSTO
+  T8 -> state=RSTOS0
+  T9 -> state=RSTR
+  T10 -> state=S0
+  T11 -> state=S1
+  T12 -> state=S2
+  T13 -> state=SF
+  T14 -> state=SH
+  T15 -> service=ssh
+  A0 -> T0 A3 | T1 A3 | T10 A3 | T11 A3 | T12 A3 | T13 A3 | T14 A3 | T2 A3 | T3 A3 | T4 A2 | T5 A3 | T6 A3 | T7 A3 | T8 A3 | T9 A3 | service=http
+  | T15 A3
+  A1 -> T0 A3 | T1 A3 | T10 A2 | T11 A2 | T12 A2 | T13 A0 | T14 A3 | T2 A3 | T3 A3 | T4 A3 | T5 A3 | T6 A2 | T7 A2 | T8 A3 | T9 A2 | state=REJ | state=RSTO | state=RSTR | state=S0 | state=S1 | state=S2 | state=SF
+  | T15 A3
+  A2 -> T0 A3 | T1 A3 | T10 A3 | T11 A3 | T12 A3 | T13 A3 | T14 A3 | T2 A3 | T3 A3 | T4 A3 | T5 A3 | T6 A3 | T7 A3 | T8 A3 | T9 A3
+  | T15 A3
+  S -> T0 A3 | T1 A1 | T10 A3 | T11 A3 | T12 A3 | T13 A3 | T14 A3 | T2 A3 | T3 A3 | T4 A3 | T5 A3 | T6 A3 | T7 A3 | T8 A3 | T9 A3
+  | T15 A3
+  A3 -> T0 A3 | T1 A3 | T10 A3 | T11 A3 | T12 A3 | T13 A3 | T14 A3 | T2 A3 | T3 A3 | T4 A3 | T5 A3 | T6 A3 | T7 A3 | T8 A3 | T9 A3
+  | T15 A3

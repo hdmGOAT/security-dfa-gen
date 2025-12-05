@@ -1,0 +1,79 @@
+digraph PDA {
+  rankdir=LR;
+  node [shape=circle, fontname="Helvetica"];
+  edge [fontname="Courier", fontsize=10];
+
+  /* ---------------- Setup ---------------- */
+  __start [shape=point];
+  /* Push Z0: The "Ground Truth" that the machine is running */
+  __start -> Start [label="ε, ε -> Z0"];
+
+  Start [label="Start", style=bold];
+  
+  /* Trap State: Any invalid move lands here */
+  Reject [label="Reject", shape=Msquare, style=filled, fillcolor="#ffcccc"];
+  
+  /* Accept: Reached only if input is done AND we can pop Z0 (Empty Stack) */
+  Accept [label="Accept", shape=doublecircle, style=filled, fillcolor="#ccffcc"];
+
+  /* ---------------- Protocol Selection ---------------- */
+  Start -> TCP_Pending [label="proto=tcp, ε -> ε"];
+  Start -> UDP_Process [label="proto=udp, ε -> ε"];
+  Start -> ICMP_Process [label="proto=icmp, ε -> ε"];
+
+  /* ---------------- TCP LOGIC ---------------- */
+  TCP_Pending [label="TCP_Wait_SYN"];
+  TCP_Established [label="TCP_Established", shape=doubleoctagon];
+  TCP_Closing [label="TCP_Closing"];
+
+  /* 1. START SESSION: Push 'CONN' on top of Z0 */
+  TCP_Pending -> TCP_Established [label="state=S0, ε -> CONN", color="blue", penwidth=2.0];
+
+  /* Allow service identification during pending state (e.g. if packet has both flags and service info) */
+  TCP_Pending -> TCP_Pending [label="service=http, ε -> ε"];
+  TCP_Pending -> TCP_Pending [label="service=ssh, ε -> ε"];
+
+  /* 1a. Invalid starts go to Reject */
+  TCP_Pending -> Reject [label="state=S1, ε -> ε"];
+  TCP_Pending -> Reject [label="state=SF, ε -> ε"];
+
+  /* 2. IN SESSION: Loop while CONN is on stack */
+  TCP_Established -> TCP_Established [label="state=S1, ε -> ε"];
+  TCP_Established -> TCP_Established [label="state=S2, ε -> ε"];
+  TCP_Established -> TCP_Established [label="service=http, ε -> ε"];
+  TCP_Established -> TCP_Established [label="service=ssh, ε -> ε"];
+  TCP_Established -> TCP_Established [label="proto=tcp, ε -> ε"];
+
+  /* 3. END SESSION: Pop 'CONN', exposing Z0 below it */
+  TCP_Established -> TCP_Closing [label="state=SF, CONN -> ε", color="red", penwidth=2.0];
+  TCP_Established -> TCP_Closing [label="state=RSTR, CONN -> ε", color="red"];
+
+  /* 4. TERMINATE: Pop Z0. If Z0 is not there, we crash/reject. */
+  TCP_Closing -> Accept [label="END, Z0 -> ε"];
+  
+  /* If stream ends while established (CONN is still there), we reject */
+  TCP_Established -> Reject [label="END, CONN -> CONN"]; 
+
+
+  /* ---------------- UDP LOGIC ---------------- */
+  UDP_Process [label="UDP_Process"];
+
+  /* UDP doesn't push CONN, so Z0 is always exposed */
+  UDP_Process -> UDP_Process [label="service=dns, ε -> ε"];
+  UDP_Process -> UDP_Process [label="service=ntp, ε -> ε"];
+  UDP_Process -> UDP_Process [label="proto=udp, ε -> ε"];
+  UDP_Process -> UDP_Process [label="state=OTH, ε -> ε"];
+  
+  /* Finalize: Pop Z0 */
+  UDP_Process -> Accept [label="END, Z0 -> ε"];
+
+  /* ---------------- ICMP LOGIC ---------------- */
+  ICMP_Process [label="ICMP_Process"];
+  
+  ICMP_Process -> ICMP_Process [label="type=echo, ε -> ε"];
+  ICMP_Process -> ICMP_Process [label="proto=icmp, ε -> ε"];
+  ICMP_Process -> ICMP_Process [label="state=OTH, ε -> ε"];
+  
+  /* Finalize: Pop Z0 */
+  ICMP_Process -> Accept [label="END, Z0 -> ε"];
+}

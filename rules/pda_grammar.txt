@@ -1,0 +1,12 @@
+# PDA grammar (control-state CFG) derived from: /home/hd/projects/automata_PIT/security-visualizer-backend/external/data/pda.dot
+Start state: __start
+Accepting states: Accept
+  S -> __start
+  __start -> ε Start
+  Start -> proto=icmp ICMP_Process | proto=tcp TCP_Pending | proto=udp UDP_Process
+  Accept -> ε
+  TCP_Pending -> service=http TCP_Pending | service=ssh TCP_Pending | state=S0 TCP_Established | state=S1 Reject | state=SF Reject
+  UDP_Process -> END | END Accept | proto=udp UDP_Process | service=dns UDP_Process | service=ntp UDP_Process | state=OTH UDP_Process
+  ICMP_Process -> END | END Accept | proto=icmp ICMP_Process | state=OTH ICMP_Process | type=echo ICMP_Process
+  TCP_Established -> END Reject | proto=tcp TCP_Established | service=http TCP_Established | service=ssh TCP_Established | state=RSTR TCP_Closing | state=S1 TCP_Established | state=S2 TCP_Established | state=SF TCP_Closing
+  TCP_Closing -> END | END Accept
